@@ -2,7 +2,7 @@
    브라우저에서는 window.FrameLogic, node 에서는 require('./logic.js') 로 씁니다.
    기준 문서: docs/01_프로젝트_기획서.md (3장 데이터, 5장 기능, 8장 1단계)
 
-   흐름: 일일 실적(입력·엑셀) → achieveRows(달성률 관리표 — 일·주·월, 90% 선)
+   흐름: 일일 실적(측정 자동 반영 · 엑셀 · 날짜 더하기 · 고치기) → achieveRows(달성률 관리표 — 일·주·월, 90% 선)
         공정 마스터 + 현장 측정 기록(작업·손실 구간) → processStats(공정별 대당 공수·손실)
         → lineAnalysis(사이클타임 vs 택트타임, 병목, 라인 밸런스) · lossPareto(손실 파레토)
         → simulate · suggestAllocation(인원 배분) · comparePeriods(개선 전·후 + 단가 절감)
@@ -22,7 +22,7 @@
   'use strict';
   /* 판(版) — index.html 의 ?v= · app.js 의 APP_VERSION 과 같아야 합니다(scripts/bump-version.mjs 로 함께 올림).
      브라우저가 옛 logic.js 와 새 app.js 를 섞어 쓰면 app.js 가 이 값을 보고 계산을 멈춥니다. */
-  var VERSION = '2026-11-10.2';
+  var VERSION = '2026-11-10.5';
 
   var SCHEMA_VERSION = 1;
   var GOAL = 0.9; // 달성률 목표 90% (제출 원문)
@@ -292,6 +292,21 @@
       by[c.date] = c;
     });
     return { records: Object.keys(by).sort().map(function (k) { return by[k]; }), stat: stat };
+  }
+
+  /* 「날짜 더하기」(v2.3) — 측정이 없는 날의 실적을 넣을 자리를 만듭니다. 입력란 대신 이 줄을 「고치기」 화면으로 채웁니다.
+     이미 있는 날짜는 그대로 두고 created:false. 새 줄의 목표는 설정 기본 목표, 실제 대수 · 인원 · 가용시간은 비움
+     (인원 · 가용시간이 빈 날은 계산에서 설정 기본값을 씀). 그날 측정이 있으면 syncMeasuredActual 이 빈 실제 대수를 채웁니다. */
+  function addDailyDay(daily, date, settings) {
+    var d = toISO(date), list = (daily || []).slice();
+    if (!d) return { records: list, created: false, date: null };
+    if (list.some(function (r) { return r.date === d; })) return { records: list, created: false, date: d };
+    var t = settings && settings.target != null ? settings.target : null;
+    return { records: mergeDaily(list, [{ date: d, target: t }]).records, created: true, date: d };
+  }
+  /* 방금 더한 날을 「고치기 취소」로 닫을 때 — 실제 대수 · 비고를 아직 안 넣은 줄이면 지웁니다(빈 줄이 달성률에 남지 않게) */
+  function dropBlankDay(daily, date) {
+    return (daily || []).filter(function (r) { return r.date !== date || r.actual != null || r.note; });
   }
 
   /* ── 5. 달성률 관리표 (일·주·월) ─────────────────────────────── */
@@ -1153,7 +1168,7 @@
     dayLabel: dayLabel, weekLabel: weekLabel, monthLabel: monthLabel, toSec: toSec, secToHms: secToHms, durSec: durSec, fmtDur: fmtDur,
     fmtN: fmtN, fmtPct: fmtPct, fmtWon: fmtWon, fmtMin: fmtMin, colName: colName, fieldsOf: fieldsOf, fieldLabel: fieldLabel,
     detectColumns: detectColumns, headerSignature: headerSignature, pickSheet: pickSheet,
-    parseDaily: parseDaily, cleanDaily: cleanDaily, mergeDaily: mergeDaily, achieveRows: achieveRows, achieveTotal: achieveTotal, achieveToAoa: achieveToAoa,
+    parseDaily: parseDaily, cleanDaily: cleanDaily, mergeDaily: mergeDaily, addDailyDay: addDailyDay, dropBlankDay: dropBlankDay, achieveRows: achieveRows, achieveTotal: achieveTotal, achieveToAoa: achieveToAoa,
     cleanProcess: cleanProcess, sortProcesses: sortProcesses, processByName: processByName,
     normKind: normKind, isLoss: isLoss, parseMeasure: parseMeasure, cleanMeasure: cleanMeasure, mergeMeasures: mergeMeasures, sortMeasures: sortMeasures, measureDays: measureDays, measureKey: measureKey,
     processStats: processStats, taktInfo: taktInfo, lineAnalysis: lineAnalysis, lossPareto: lossPareto, lossMatrix: lossMatrix,

@@ -589,6 +589,42 @@ test('AI 연결 — 키가 없으면 인증 머리글 없음, 저장 칸 이름'
   assert.equal(E.toStored({ baseUrl: 'https://a/v1', model: 'm', apiKey: 'k', remember: false }).apiKey, '');
 });
 
+console.log('일일 실적 — 날짜 더하기 (v2.3, 입력란 대신)');
+test('addDailyDay — 새 날짜는 목표 기본값 · 나머지는 비운 줄, 이미 있는 날짜 · 빈 날짜는 그대로', () => {
+  const daily = L.mergeDaily([], [{ date: '2026-11-09', target: 8, actual: 7, workers: 6, availHr: 7.5 }]).records;
+  let r = L.addDailyDay(daily, '2026-11-11', L.cleanSettings({ target: 9 }));
+  assert.equal(r.created, true); assert.equal(r.date, '2026-11-11');
+  assert.deepEqual(r.records.map((x) => [x.date, x.target, x.actual, x.workers, x.availHr]), [['2026-11-09', 8, 7, 6, 7.5], ['2026-11-11', 9, null, null, null]]);
+  assert.equal(daily.length, 1, '원래 배열은 바꾸지 않음');
+  r = L.addDailyDay(r.records, '2026-11-09', { target: 9 });
+  assert.equal(r.created, false); assert.equal(r.date, '2026-11-09'); assert.equal(r.records.find((x) => x.date === '2026-11-09').actual, 7, '있는 날은 덮지 않음');
+  r = L.addDailyDay(daily, '', {});
+  assert.equal(r.created, false); assert.equal(r.date, null); assert.equal(r.records.length, 1);
+  r = L.addDailyDay([], '2026-11-12', {});
+  assert.equal(r.records[0].target, null, '설정 목표가 없으면 목표도 비움');
+  r = L.addDailyDay(undefined, '2026-11-12', undefined);
+  assert.equal(r.records.length, 1, '옛 자료(일일 실적 없음)도 됨');
+});
+test('addDailyDay → 그날 측정이 있으면 빈 실제 대수를 측정값으로 채움(syncMeasuredActual), 고치기로 값 저장', () => {
+  const ms = L.mergeMeasures([], [seg('2026-11-10', '검사', '1', '작업', '08:00', '08:30', true), seg('2026-11-10', '검사', '2', '작업', '08:30', '09:00', true)]).records;
+  let d = L.addDailyDay([], '2026-11-10', { target: 4 }).records;
+  const r = L.syncMeasuredActual(d, ms, PR3, { target: 4 });
+  assert.deepEqual([r.records[0].actual, r.records[0].actualSrc], [2, 'measure']); assert.equal(r.conflicts.length, 0);
+  d = L.addDailyDay([], '2026-11-13', { target: 4 }).records;
+  d = L.mergeDaily(d, [{ date: '2026-11-13', target: 4, actual: 3, workers: 5, availHr: 8, note: '측정 없음' }]).records;   // 고치기 화면 저장과 같은 길
+  assert.deepEqual([d[0].actual, d[0].workers, d[0].note], [3, 5, '측정 없음']);
+  assert.equal(L.achieveTotal(d, { settings: L.cleanSettings({}) }).rate, 0.75);
+});
+test('dropBlankDay — 더하고 저장하지 않은 빈 줄만 지움(실제 대수 · 비고가 있으면 남김)', () => {
+  const d = L.mergeDaily([], [{ date: '2026-11-10', target: 4 }, { date: '2026-11-11', target: 4, actual: 0 }, { date: '2026-11-12', target: 4, note: '휴무' }, { date: '2026-11-13', target: 4, actual: 3 }]).records;
+  assert.deepEqual(L.dropBlankDay(d, '2026-11-10').map((x) => x.date), ['2026-11-11', '2026-11-12', '2026-11-13']);
+  assert.equal(L.dropBlankDay(d, '2026-11-11').length, 4, '실제 0대도 값');
+  assert.equal(L.dropBlankDay(d, '2026-11-12').length, 4, '비고가 있으면 남김');
+  assert.equal(L.dropBlankDay(d, '2026-11-13').length, 4);
+  assert.equal(L.dropBlankDay(d, '2026-12-01').length, 4, '없는 날짜');
+  assert.deepEqual(L.dropBlankDay(undefined, '2026-11-10'), []);
+});
+
 const { versions } = await import('../scripts/bump-version.mjs');
 test('판 맞추기 — index.html ?v= · logic.js · app.js 가 같은 판 (scripts/bump-version.mjs)', () => {
   const v = versions();

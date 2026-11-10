@@ -5,7 +5,7 @@
   var L = window.FrameLogic, S = window.FrameStore, C = window.FrameCharts, AIP = window.AIPanel;
   /* 판 맞추기 — 브라우저가 옛 logic.js 와 새 app.js 를 섞어 쓰면(Pages 캐시) 버튼과 결과가 어긋날 수 있어, 섞였으면 계산하지 않고 새로고침을 안내합니다.
      판은 scripts/bump-version.mjs 로 index.html(?v=) · logic.js 와 함께 올립니다. */
-  var APP_VERSION = '2026-11-10.2';
+  var APP_VERSION = '2026-11-10.5';
   if (!L || L.VERSION !== APP_VERSION) {
     var m0 = document.getElementById('main') || document.body;
     m0.innerHTML = '<section class="card" id="versionMismatch"><h1>새 판이 나왔습니다 — 새로고침(Ctrl+F5)해 주세요</h1><p class="alert warn">이 브라우저가 옛 파일과 새 파일을 섞어 불러왔습니다(js/logic.js ' +
@@ -17,7 +17,7 @@
   var db = S.loadDb();
   var ui = {
     unit: 'day', from: '', to: '', src: 'measured', lossBy: 'process', lossProc: '', measDay: '', progress: '',
-    pending: { daily: [], measure: [] }, errors: { daily: [], measure: [] }, editDate: '', sw: { worker: '', process: '', unit: '1' }
+    pending: { daily: [], measure: [] }, errors: { daily: [], measure: [] }, editDate: '', addedDate: '', sw: { worker: '', process: '', unit: '1' }
   };
   var main = document.getElementById('main');
 
@@ -114,7 +114,7 @@
   function emptyNotice(what) {
     return h('section', { class: 'card empty' },
       h('p', null, what || '아직 데이터가 없습니다.'),
-      h('p', null, '일일 실적을 입력·가져오거나, 가상 샘플로 먼저 둘러봐 주세요.'),
+      h('p', null, '현장 측정을 하거나 일일 실적을 엑셀로 가져오거나, 가상 샘플로 먼저 둘러봐 주세요.'),
       h('div', { class: 'btn-row', style: 'justify-content:center' },
         h('a', { class: 'btn btn-primary', href: '#/daily' }, '일일 실적으로'),
         h('button', { type: 'button', class: 'btn', onclick: askSample }, '가상 샘플로 시작')));
@@ -351,7 +351,7 @@
   }
   function stepsCard() {
     var steps = [
-      ['#/daily', '일일 실적', '날짜·목표·실제 대수·인원·가용시간을 입력하거나 엑셀로 가져옵니다.'],
+      ['#/daily', '일일 실적', '날짜별 목표·실제 대수·인원·가용시간 — 현장 측정 완성 대수가 자동으로 들어가고, 여러 날은 엑셀로 가져옵니다. 측정이 없는 날은 「날짜 더하기」, 값은 표의 「고치기」로 바꿉니다.'],
       ['#/process', '공정 설정', '공정 순서·표준시간·담당 인원·하루 CAPA 를 적습니다(표준작업서·진행 현황의 바탕).'],
       ['#/measure', '현장 측정', '작업자별·공정별 시작·종료와 측정 항목(작업 · 세팅 · 손실 · 휴식, 공정 설정에서 바꿈)을 잽니다. 쉬거나 자리를 비울 때는 「일시정지」. 「다음 대」로 끝낸 대수가 공정별 진행 현황과 일일 실적에 자동으로 들어갑니다.'],
       ['#/analysis', '병목 분석 · 손실 분석', '사이클타임과 택트타임을 비교해 병목공정을 찾고, 손실을 큰 순으로 봅니다.'],
@@ -412,14 +412,22 @@
   }
 
   /* ── 일일 실적 ─────────────────────────── */
-  function pageDaily() {
-    var cur = ui.editDate ? db.daily.filter(function (r) { return r.date === ui.editDate; })[0] : null;
-    var last = db.daily[db.daily.length - 1];
-    var dDate = inp({ type: 'date', value: cur ? cur.date : today(), required: true });
+  /* v2.3 — 새 실적을 넣는 입력란은 없앴습니다(요청: 실적 수정 기능과 겹침). 실적은 ① 현장 측정 자동 반영 ② 엑셀 가져오기
+     ③ 표 위 「날짜 더하기」 → 그 줄의 「고치기」 로 들어옵니다. 아래 양식은 「고치기」를 눌렀을 때만 열립니다. */
+  function openDailyEdit(date) {
+    ui.editDate = date; render();
+    var f = document.getElementById('dailyEdit');
+    if (f) { f.scrollIntoView({ block: 'start' }); var x = f.querySelector('input[type=number]'); if (x) x.focus({ preventScroll: true }); }
+  }
+  function closeDailyEdit() {
+    if (ui.addedDate) { db.daily = L.dropBlankDay(db.daily, ui.addedDate); save(); }
+    ui.editDate = ''; ui.addedDate = ''; render();
+  }
+  function dailyEditForm(cur) {
+    var dDate = inp({ type: 'date', value: cur.date, required: true });
     function num(v, step) { return inp({ type: 'number', inputmode: 'decimal', min: '0', step: step || '1', value: v == null ? '' : v }); }
-    var dT = num(cur ? cur.target : (db.settings.target != null ? db.settings.target : '')), dA = num(cur ? cur.actual : '');
-    var dW = num(cur ? cur.workers : (last && last.workers != null ? last.workers : db.settings.workers)), dH = num(cur ? cur.availHr : (last && last.availHr != null ? last.availHr : db.settings.availHr), '0.1');
-    var dN = inp({ value: cur ? cur.note : '', placeholder: '예: 본용접 대기, 자재 늦게 들어옴' });
+    var dT = num(cur.target), dA = num(cur.actual), dW = num(cur.workers), dH = num(cur.availHr, '0.1');
+    var dN = inp({ value: cur.note || '', placeholder: '예: 본용접 대기, 자재 늦게 들어옴' });
     var preview = h('p', { class: 'note', 'aria-live': 'polite' });
     function upd() {
       var t = Number(dT.value), a = Number(dA.value);
@@ -431,20 +439,37 @@
       if (!dDate.value) { toast('일자를 넣어 주세요.', true); return; }
       if (dT.value === '' && dA.value === '') { toast('목표 또는 실제 대수를 넣어 주세요.', true); return; }
       var exists = db.daily.some(function (r) { return r.date === dDate.value; });
-      if (exists && dDate.value !== ui.editDate && !confirm(dDate.value + ' 실적이 이미 있습니다. 새 값으로 바꿀까요?')) return;
-      var keepSrc = cur && cur.actualSrc === 'measure' && dDate.value === cur.date && dA.value !== '' && Number(dA.value) === cur.actual;
-      db.daily = L.mergeDaily(db.daily, [{ date: dDate.value, target: dT.value, actual: dA.value, workers: dW.value, availHr: dH.value, note: dN.value, actualSrc: keepSrc ? 'measure' : '', measureAck: cur && dDate.value === cur.date ? cur.measureAck : null }]).records;
+      if (exists && dDate.value !== cur.date && !confirm(dDate.value + ' 실적이 이미 있습니다. 새 값으로 바꿀까요?')) return;
+      if (ui.addedDate === cur.date && dDate.value !== cur.date) db.daily = L.dropBlankDay(db.daily, cur.date); // 더한 날의 날짜를 바꿔 저장하면 빈 줄은 남기지 않음
+      var keepSrc = cur.actualSrc === 'measure' && dDate.value === cur.date && dA.value !== '' && Number(dA.value) === cur.actual;
+      db.daily = L.mergeDaily(db.daily, [{ date: dDate.value, target: dT.value, actual: dA.value, workers: dW.value, availHr: dH.value, note: dN.value, actualSrc: keepSrc ? 'measure' : '', measureAck: dDate.value === cur.date ? cur.measureAck : null }]).records;
       db.sample = false;
-      ui.editDate = '';
+      ui.editDate = ''; ui.addedDate = '';
       save(); toast(dDate.value + ' 실적을 저장했습니다.'); render();
     }
-    var form = h('form', { class: 'card', onsubmit: submit }, h('h2', null, cur ? cur.date + ' 실적 고치기' : '현장 실적 입력'),
+    return h('form', { class: 'card', id: 'dailyEdit', onsubmit: submit }, h('h2', null, cur.date + ' 실적 고치기'),
+      ui.addedDate === cur.date ? h('p', { class: 'note' }, '새로 더한 날입니다. 실제 대수를 넣고 저장해 주세요(인원 · 가용시간을 비워 두면 설정의 기본값으로 계산). 저장하지 않고 닫으면 이 줄은 지워집니다.') : null,
       h('div', { class: 'form-grid' },
         fld('일자', dDate), fld('목표 대수', dT, '그날 목표 실적 대수'), fld('실제 생산 대수', dA),
         fld('투입 인원(명)', dW, '그날 실제로 일한 인원'), fld('가용시간(HR)', dH, '하루 실작업 가능시간(휴식 제외)'), fld('비고·지연 사유', dN)),
       preview,
       h('div', { class: 'btn-row' }, h('button', { type: 'submit', class: 'btn btn-primary' }, '저장'),
-        cur ? h('button', { type: 'button', class: 'btn', onclick: function () { ui.editDate = ''; render(); } }, '고치기 취소') : null));
+        h('button', { type: 'button', class: 'btn', onclick: closeDailyEdit }, '고치기 취소')));
+  }
+  function pageDaily() {
+    var cur = ui.editDate ? db.daily.filter(function (r) { return r.date === ui.editDate; })[0] : null;
+    if (!cur) { ui.editDate = ''; ui.addedDate = ''; }
+    var addDate = inp({ type: 'date', value: today(), 'aria-label': '더할 날짜' });
+    function addDay() {
+      var r = L.addDailyDay(db.daily, addDate.value, db.settings);
+      if (!r.date) { toast('날짜를 골라 주세요.', true); return; }
+      if (r.created) {
+        db.daily = r.records; db.sample = false;
+        syncFromMeasures(); // 그날 측정이 있으면 빈 실제 대수를 측정값으로 채움
+        ui.addedDate = r.date; save();
+      } else toast(r.date + ' 실적이 이미 있습니다 — 그 줄을 고칩니다.');
+      openDailyEdit(r.date);
+    }
     var mByDate = {};
     L.measuredActuals(db.measures, db.processes, db.kinds).forEach(function (m) { if (m.lineDone != null) mByDate[m.date] = m.lineDone; });
     var sync = L.syncMeasuredActual(db.daily, db.measures, db.processes, db.settings, db.kinds);
@@ -467,20 +492,22 @@
       var rt = r.target > 0 && r.actual != null ? r.actual / r.target : null;
       return { cls: rt != null && rt < goal() ? 'below' : null, tdCls: { 5: rt == null ? '' : rt >= goal() ? 'ok' : 'bad' }, cells: [L.dayLabel(r.date) + ' ' + r.date.slice(0, 4), r.target == null ? '-' : r.target, r.actual == null ? '-' : r.actual,
         measCell(r), r.actual != null && r.target != null ? r.actual - r.target : '-', pct(rt), r.workers == null ? '-' : r.workers, r.availHr == null ? '-' : r.availHr, r.note || '',
-        h('span', { class: 'btn-row' }, h('button', { type: 'button', class: 'btn btn-sm', onclick: function () { ui.editDate = r.date; render(); window.scrollTo(0, 0); } }, '고치기'),
-          h('button', { type: 'button', class: 'btn btn-sm btn-danger', onclick: function () { if (confirm(r.date + ' 실적을 지울까요?')) { db.daily = db.daily.filter(function (x) { return x.date !== r.date; }); save(); render(); } } }, '지우기'))] };
+        h('span', { class: 'btn-row' }, h('button', { type: 'button', class: 'btn btn-sm', onclick: function () { ui.addedDate = ''; openDailyEdit(r.date); } }, '고치기'),
+          h('button', { type: 'button', class: 'btn btn-sm btn-danger', onclick: function () { if (confirm(r.date + ' 실적을 지울까요?')) { db.daily = db.daily.filter(function (x) { return x.date !== r.date; }); if (ui.editDate === r.date) { ui.editDate = ''; ui.addedDate = ''; } save(); render(); } } }, '지우기'))] };
     });
     return [
-      pageHead('데이터', '일일 실적', '날짜마다 목표 대수·실제 생산 대수·투입 인원·가용시간을 기록합니다. 같은 날짜를 다시 넣으면 새 값으로 바뀝니다. 현장 측정을 하면 라인 완성 대수(마지막 공정 완료 수)가 실제 대수에 자동으로 들어갑니다.'),
+      pageHead('데이터', '일일 실적', '날짜마다 목표 대수·실제 생산 대수·투입 인원·가용시간이 쌓이는 곳입니다. 현장 측정을 하면 라인 완성 대수(마지막 공정 완료 수)가 그날 실제 대수로 자동으로 들어가고, 여러 날은 엑셀로 한 번에 가져옵니다. 값을 바꿀 때는 표의 「고치기」, 측정이 없는 날은 「날짜 더하기」로 줄을 만든 뒤 고칩니다.'),
       conflictCard,
-      form,
+      cur ? dailyEditForm(cur) : null,
       importCard('daily'),
       h('section', { class: 'card' }, h('h2', null, '쌓인 일일 실적 (' + db.daily.length + '일)'),
-        h('div', { class: 'btn-row', style: 'margin-bottom:10px' },
+        h('div', { class: 'btn-row daily-tools', style: 'margin-bottom:10px' },
+          h('span', { class: 'daily-add' }, addDate, h('button', { type: 'button', class: 'btn', onclick: addDay }, '날짜 더하기')),
           h('button', { type: 'button', class: 'btn', onclick: function () { writeXlsx('프레임_일일실적_양식.xlsx', [{ name: '일일 실적', aoa: [L.DAILY_FIELDS.map(function (f) { return f.label; })] }]); } }, '빈 엑셀 양식 받기'),
           db.daily.length ? h('button', { type: 'button', class: 'btn', onclick: function () {
             writeXlsx('프레임_일일실적_' + today() + '.xlsx', [{ name: '일일 실적', aoa: [L.DAILY_FIELDS.map(function (f) { return f.label; })].concat(db.daily.map(function (r) { return [r.date, r.target, r.actual, r.workers, r.availHr, r.note]; })) }]);
           } }, '엑셀로 내려받기') : null),
+        h('p', { class: 'note' }, '측정이 없는 날의 실적은 날짜를 골라 「날짜 더하기」를 누르면 그 줄이 생기고 바로 고치기 화면이 열립니다. 이미 있는 날짜면 그 줄을 엽니다.'),
         db.daily.length ? table(['일자', '목표', '실제', '측정', '차이', '달성률', '인원', '가용(HR)', '비고', ''], rows, { num: [0, 1, 1, 0, 1, 1, 1, 1, 0, 0] }) : h('p', { class: 'note' }, '아직 없습니다.'))
     ];
   }

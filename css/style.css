@@ -397,6 +397,10 @@ table.list.sop td.num, table.list.sop td:first-child { min-width: 0; }
 .blank-sheet .kinds { white-space: nowrap; letter-spacing: .02em; }
 .blank-sheet .foot { font-size: 8.5pt; margin-top: 6pt; }
 
+/* 일일 실적 — 표 위 「날짜 더하기」(v2.3, 입력란 대신) */
+.daily-add { display: inline-flex; flex-wrap: wrap; gap: 6px; align-items: center; max-width: 100%; }
+.daily-add input { min-height: 40px; padding: 4px 8px; border: 1px solid var(--line); border-radius: 8px; background: #fff; max-width: 100%; }
+
 @media print {
   .sidebar, .topbar, .side-backdrop, .site-footer, .sample-banner, .store-banner, .no-print, .skip, .toast, .filters, .menu-btn { display: none !important; }
   .shell { display: block; }
