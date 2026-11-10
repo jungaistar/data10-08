@@ -5,7 +5,7 @@
   var L = window.FrameLogic, S = window.FrameStore, C = window.FrameCharts, AIP = window.AIPanel;
   /* 판 맞추기 — 브라우저가 옛 logic.js 와 새 app.js 를 섞어 쓰면(Pages 캐시) 버튼과 결과가 어긋날 수 있어, 섞였으면 계산하지 않고 새로고침을 안내합니다.
      판은 scripts/bump-version.mjs 로 index.html(?v=) · logic.js 와 함께 올립니다. */
-  var APP_VERSION = '2026-10-27.1';
+  var APP_VERSION = '2026-11-10.2';
   if (!L || L.VERSION !== APP_VERSION) {
     var m0 = document.getElementById('main') || document.body;
     m0.innerHTML = '<section class="card" id="versionMismatch"><h1>새 판이 나왔습니다 — 새로고침(Ctrl+F5)해 주세요</h1><p class="alert warn">이 브라우저가 옛 파일과 새 파일을 섞어 불러왔습니다(js/logic.js ' +
@@ -56,6 +56,25 @@
     b.hidden = ok;
     b.textContent = ok ? '' : '이 브라우저에 저장되지 않습니다(저장소가 막혔거나 가득 참). 창을 닫기 전에 설정 화면에서 JSON 백업을 받아 두세요.';
     return ok;
+  }
+  /* 현장 측정 → 일일 실적 — 측정 기록이 바뀔 때마다 부릅니다. 손으로 넣은 실제 대수는 덮어쓰지 않습니다(일일 실적 화면에서 고름) */
+  /* 계산 옵션 — 측정 항목(분류로 계산)과 「사이클타임에 세팅 넣기」 설정을 함께 넘깁니다 */
+  function ko(o) { o = o || {}; o.kinds = db.kinds; o.ctSetup = !!db.settings.ctSetup; return o; }
+  function kName(id) { return L.kindName(db.kinds, id); }
+  function kCat(id) { return L.kindCat(db.kinds, id); }
+  /* 손실 표의 열 — 손실 항목(숨긴 항목은 기록이 있을 때만) */
+  function lossCols() {
+    var used = {}; db.measures.forEach(function (m) { used[m.kind] = 1; });
+    return L.lossKinds(db.kinds).filter(function (k) { return !k.hidden || used[k.id]; });
+  }
+  function syncFromMeasures() {
+    var r = L.syncMeasuredActual(db.daily, db.measures, db.processes, db.settings, db.kinds);
+    db.daily = r.records;
+    return r;
+  }
+  function syncNote(r) {
+    var a = r.stat.added + r.stat.updated;
+    return (a ? ' 일일 실적 ' + a + '일에 측정 완성 대수를 반영했습니다.' : '') + (r.conflicts.length ? ' 손 입력과 다른 날 ' + r.conflicts.length + '일 — 일일 실적에서 골라 주세요.' : '');
   }
   function download(name, blob) {
     var a = h('a', { href: URL.createObjectURL(blob), download: name });
@@ -162,7 +181,7 @@
   function reparse(item) {
     var sh = item.sheets.filter(function (s) { return s.name === item.sheet; })[0];
     item.aoa = sh ? sh.aoa : [];
-    item.result = item.kind === 'daily' ? L.parseDaily(item.aoa, { overrides: item.overrides }) : L.parseMeasure(item.aoa, { overrides: item.overrides });
+    item.result = item.kind === 'daily' ? L.parseDaily(item.aoa, { overrides: item.overrides }) : L.parseMeasure(item.aoa, { overrides: item.overrides, kinds: db.kinds });
   }
   function handleFiles(list, kind) {
     var files = Array.prototype.slice.call(list || []).filter(function (f) { return !/^~\$/.test(f.name) && /\.(xlsx|xlsm|xls|csv)$/i.test(f.name); });
@@ -198,7 +217,7 @@
           if (p) x.process = p.name; // 공정 마스터 표기로 맞춤
           else if (newProcs.indexOf(x.process) < 0) newProcs.push(x.process);
         });
-        var mm = L.mergeMeasures(db.measures, r.records); db.measures = mm.records;
+        var mm = L.mergeMeasures(db.measures, r.records, db.kinds); db.measures = mm.records;
         stat.added += mm.stat.added; stat.updated += mm.stat.updated;
       }
       db.files.push({ kind: kind, name: it.fileName, sheet: it.sheet, rows: r.records.length, at: new Date().toISOString().slice(0, 16).replace('T', ' ') });
@@ -211,9 +230,10 @@
     }
     if (!items.every(function (it) { return it.sample; })) db.sample = false;
     ui.pending[kind] = ui.pending[kind].filter(function (p) { return items.indexOf(p) < 0; });
+    var sy = kind === 'measure' ? syncFromMeasures() : null;
     save();
     if (!quiet) {
-      toast(ok + '개 파일 반영 — 새 행 ' + stat.added + ' · 바뀐 행 ' + stat.updated + (newProcs.length ? ' · 공정 설정에 새 공정 ' + newProcs.length + '개 추가(표준시간·인원을 채워 주세요)' : ''));
+      toast(ok + '개 파일 반영 — 새 행 ' + stat.added + ' · 바뀐 행 ' + stat.updated + (newProcs.length ? ' · 공정 설정에 새 공정 ' + newProcs.length + '개 추가(표준시간·인원·CAPA 를 채워 주세요)' : '') + (sy ? syncNote(sy) : ''));
       render();
     }
   }
@@ -308,15 +328,20 @@
     var last = weeks[weeks.length - 1];
     var tot = L.achieveTotal(db.daily, { settings: db.settings, goal: goal() });
     var mdays = L.measureDays(db.measures), mto = mdays[mdays.length - 1], mfrom = mto ? L.addDays(mto, -13) : '';
-    var st = L.processStats(db.measures, db.processes, { from: mfrom, to: mto });
+    var st = L.processStats(db.measures, db.processes, ko({ from: mfrom, to: mto }));
     var la = L.lineAnalysis(st, L.taktInfo(db.daily, { from: mfrom, to: mto, settings: db.settings }));
-    var lp = L.lossPareto(db.measures, { from: mfrom, to: mto });
+    var lp = L.lossPareto(db.measures, ko({ from: mfrom, to: mto }));
     var top = lp.rows[0];
     out.push(h('div', { class: 'tiles' },
       tile('최근 주 달성률', last ? pct(last.rate) : '-', last ? last.label + ' · ' + last.actual + '/' + last.target + '대' : '', last && last.rate != null ? (last.rate >= goal() ? 'ok' : 'bad') : ''),
       tile('전체 기간 달성률', pct(tot.rate), goalPct() + ' 이상 ' + tot.okDays + '/' + tot.ratedDays + '일', tot.rate != null ? (tot.rate >= goal() ? 'ok' : 'bad') : ''),
       tile('병목공정', la.bottleneck ? shortName(la.bottleneck.name) : '-', la.bottleneck ? '사이클타임 ' + m1(la.maxCt) + '분 · 택트 ' + m1(la.taktMin) + '분 (측정 ' + (mfrom ? mfrom.slice(5) + '~' + mto.slice(5) : '-') + ')' : '측정 기록이 필요합니다', la.bottleneck && la.bottleneck.over ? 'bad' : ''),
       tile('가장 큰 손실', top && top.sec ? top.type : '-', top && top.sec ? '손실의 ' + pct(top.share) + ' · ' + L.fmtN(top.min) + '분' : '측정 기록이 필요합니다')));
+    if (mto) {
+      var pday = mdays.indexOf(today()) >= 0 ? today() : mto;
+      out.push(progressCard(pday, { title: (pday === today() ? '오늘' : '최근 측정일') + ' 공정 진행 · 지연 공정', compact: true }));
+      out.push(timeCard(L.timeBreakdown(db.measures, ko({ from: mfrom, to: mto })), '측정 시간 나눠 보기 (' + mfrom.slice(5) + '~' + mto.slice(5) + ')'));
+    }
     if (weeks.length) out.push(h('section', { class: 'card' }, h('h2', null, '주별 달성률'),
       C.figure('주별 달성률 (' + goalPct() + ' 선)', { type: 'bar', labels: weeks.map(function (w) { return w.key.slice(5).replace('-', '/'); }), unit: '%', minMax: 1, refLines: [{ value: goal(), label: goalPct() }],
         series: [{ name: '달성률', values: weeks.map(function (w) { return w.rate; }), color: 'var(--series-3)', colors: weeks.map(function (w) { return w.rate != null && w.rate < goal() ? 'var(--series-bad)' : 'var(--series-3)'; }) }] }),
@@ -327,8 +352,8 @@
   function stepsCard() {
     var steps = [
       ['#/daily', '일일 실적', '날짜·목표·실제 대수·인원·가용시간을 입력하거나 엑셀로 가져옵니다.'],
-      ['#/process', '공정 설정', '공정 순서·표준시간·담당 인원을 적습니다(표준작업서의 바탕).'],
-      ['#/measure', '현장 측정', '2~3일 동안 작업자별·공정별 시작·종료와 손실(자재 준비·이동·대기·재작업·기타)을 잽니다. 휴대폰 스톱워치 또는 종이 측정표.'],
+      ['#/process', '공정 설정', '공정 순서·표준시간·담당 인원·하루 CAPA 를 적습니다(표준작업서·진행 현황의 바탕).'],
+      ['#/measure', '현장 측정', '작업자별·공정별 시작·종료와 측정 항목(작업 · 세팅 · 손실 · 휴식, 공정 설정에서 바꿈)을 잽니다. 쉬거나 자리를 비울 때는 「일시정지」. 「다음 대」로 끝낸 대수가 공정별 진행 현황과 일일 실적에 자동으로 들어갑니다.'],
       ['#/analysis', '병목 분석 · 손실 분석', '사이클타임과 택트타임을 비교해 병목공정을 찾고, 손실을 큰 순으로 봅니다.'],
       ['#/sim', '인원 배분', '공정별 인원을 바꿔 보며 같은 인원으로 낼 수 있는 대수를 계산합니다.'],
       ['#/compare', '개선 전·후', '두 기간의 실적·손실·대당 공수와 제작 단가 절감을 비교합니다.'],
@@ -336,6 +361,54 @@
     ];
     return h('section', { class: 'card' }, h('h2', null, '진행 순서'),
       h('ol', { class: 'steps' }, steps.map(function (s) { return h('li', null, h('a', { href: s[0] }, s[1]), ' — ', s[2]); })));
+  }
+
+  /* ── 측정 시간 나눠 보기 — 작업 · 손실 · 비작업(세팅 · 휴식 등 · 일시정지) ── */
+  var CAT_LABEL = { work: '작업 시간', setup: '준비(세팅)', loss: '손실', rest: '비작업(휴식 등)', pause: '일시정지' };
+  function timeCard(tb, title) {
+    if (!tb.totalSec) return null;
+    var rows = [['작업 시간 항목 합', '작업 시간', tb.cats.work, '사이클타임에 들어감'], ['손실 항목 합', '손실', tb.cats.loss, '손실 분석 · 파레토']]
+      .concat(tb.rows.map(function (r) { return [r.name, r.cat === 'pause' ? '고정 항목' : CAT_LABEL[r.cat], r.sec, r.cat === 'setup' ? (db.settings.ctSetup ? '비작업 시간 · 사이클타임에도 넣음(설정)' : '비작업 시간 · 사이클타임에서 뺌') : '비작업 시간 · 사이클타임 · 손실에서 뺌']; }));
+    return h('section', { class: 'card' }, h('h2', null, title || '측정 시간 나눠 보기'),
+      h('div', { class: 'tiles' },
+        tile('비작업 시간', L.fmtN(tb.nonworkMin) + '분', '세팅 · 휴식 · 일시정지 — 측정 시간의 ' + pct(tb.nonworkShare)),
+        tile('세팅(준비)', L.fmtN(tb.cats.setup / 60) + '분'), tile('휴식 등', L.fmtN(tb.cats.rest / 60) + '분'), tile('일시정지', L.fmtN(tb.cats.pause / 60) + '분')),
+      table(['구분', '분류', '시간(분)', '비율', '계산에서'], rows.map(function (r) { return [r[0], r[1], L.fmtN(r[2] / 60, 1), pct(tb.totalSec ? r[2] / tb.totalSec : null), r[3]]; }), { num: [0, 0, 1, 1, 0] }),
+      h('p', { class: 'note' }, ctDefinition()));
+  }
+  function ctDefinition() {
+    return '사이클타임 = (작업 시간 항목의 합' + (db.settings.ctSetup ? ' + 세팅(준비)' : '') + ') ÷ 측정 대 수 ÷ 인원. 손실 · 휴식 등 · 일시정지는 빠집니다' +
+      (db.settings.ctSetup ? '.' : '(세팅은 공정 설정 「측정 항목」에서 사이클타임에 넣도록 바꿀 수 있습니다).') + ' 비작업 시간 = 세팅 + 휴식 등 + 일시정지.';
+  }
+
+  /* ── 공정별 진행 현황 (현장 측정 → 완료 대수 vs CAPA, 사이클타임 vs 택트) ── */
+  function progressCard(date, opts) {
+    opts = opts || {};
+    var pg = L.processProgress(db, date);
+    var rows = pg.rows.map(function (r) {
+      var st = !r.measured ? h('span', { class: 'badge muted' }, '측정 없음') : r.delayed ? h('span', { class: 'badge over' }, '지연' + (r.short && r.slow ? ' · 수량 · 시간' : r.short ? ' · 수량' : ' · 시간')) : h('span', { class: 'badge ok' }, '정상');
+      return { cls: r.delayed ? 'below' : null, tdCls: { 1: r.measured ? (r.short ? 'bad' : 'ok') : '', 2: r.slow ? 'bad' : '' },
+        cells: [shortName(r.name) + (r.isLine ? ' (라인 끝)' : ''), r.measured ? r.done + ' / ' + r.capa + '대' + (r.open ? ' (+' + r.open + ' 하는 중)' : '') : '- / ' + r.capa + '대',
+          r.ct == null ? '-' : m1(r.ct) + '분', st] };
+    });
+    var dl = pg.delayed;
+    return h('section', { class: 'card' }, h('h2', null, (opts.title || '공정별 진행 현황') + ' — ' + L.dayLabel(date)),
+      h('p', { class: dl.length ? 'alert warn' : 'alert info' }, dl.length ? '지연 공정: ' + dl.map(function (r) { return shortName(r.name); }).join(', ') + ' — 완료 수가 CAPA 보다 적거나 사이클타임이 택트타임(' + m1(pg.takt) + '분)보다 깁니다.'
+        : '지연 공정이 없습니다' + (pg.takt != null ? ' (택트타임 ' + m1(pg.takt) + '분)' : '') + '.'),
+      table(['공정', '완료 / CAPA', '사이클타임', '판정'], rows, { num: [0, 1, 1, 0] }),
+      h('p', { class: 'note' }, '라인 완성 대수(마지막 공정 완료 수) ' + (pg.lineDone == null ? '- (마지막 공정 측정 없음)' : pg.lineDone + '대') + ' — 그날 일일 실적의 실제 대수로 들어갑니다(손으로 넣은 값과 다르면 일일 실적 화면에서 고릅니다). CAPA 는 ', h('a', { href: '#/process' }, '공정 설정'), '에서 바꿉니다.'),
+      opts.compact ? h('p', { class: 'note' }, h('a', { href: '#/measure' }, '날짜별 진행 현황 전체 보기(현장 측정)')) : null);
+  }
+  function progressMatrixCard() {
+    var mx = L.progressMatrix(db, 14);
+    if (!mx.days.length) return null;
+    var rows = mx.days.map(function (pg) {
+      return { tdCls: pg.rows.reduce(function (o, r, i) { if (r.delayed) o[i + 1] = 'bad'; return o; }, {}), cells: [L.dayLabel(pg.date)].concat(pg.rows.map(function (r) { return r.measured ? r.done + '/' + r.capa + (r.slow ? '*' : '') : '-'; }))
+        .concat([pg.lineDone == null ? '-' : pg.lineDone + '대', pg.delayed.length ? pg.delayed.map(function (r) { return shortName(r.name); }).join(', ') : '없음']) };
+    });
+    return h('section', { class: 'card' }, h('h2', null, '날짜별 공정 진행 (완료 / CAPA)'),
+      table(['측정일'].concat(mx.names.map(shortName)).concat(['라인 완성', '지연 공정']), rows, { num: [0].concat(mx.names.map(function () { return 1; })).concat([1, 0]) }),
+      h('p', { class: 'note' }, '빨간 칸 = 지연(완료 < CAPA 또는 사이클타임 > 택트타임), * = 사이클타임이 택트타임보다 김. 최근 측정일 14일까지 보입니다.'));
   }
 
   /* ── 일일 실적 ─────────────────────────── */
@@ -359,7 +432,8 @@
       if (dT.value === '' && dA.value === '') { toast('목표 또는 실제 대수를 넣어 주세요.', true); return; }
       var exists = db.daily.some(function (r) { return r.date === dDate.value; });
       if (exists && dDate.value !== ui.editDate && !confirm(dDate.value + ' 실적이 이미 있습니다. 새 값으로 바꿀까요?')) return;
-      db.daily = L.mergeDaily(db.daily, [{ date: dDate.value, target: dT.value, actual: dA.value, workers: dW.value, availHr: dH.value, note: dN.value }]).records;
+      var keepSrc = cur && cur.actualSrc === 'measure' && dDate.value === cur.date && dA.value !== '' && Number(dA.value) === cur.actual;
+      db.daily = L.mergeDaily(db.daily, [{ date: dDate.value, target: dT.value, actual: dA.value, workers: dW.value, availHr: dH.value, note: dN.value, actualSrc: keepSrc ? 'measure' : '', measureAck: cur && dDate.value === cur.date ? cur.measureAck : null }]).records;
       db.sample = false;
       ui.editDate = '';
       save(); toast(dDate.value + ' 실적을 저장했습니다.'); render();
@@ -371,15 +445,34 @@
       preview,
       h('div', { class: 'btn-row' }, h('button', { type: 'submit', class: 'btn btn-primary' }, '저장'),
         cur ? h('button', { type: 'button', class: 'btn', onclick: function () { ui.editDate = ''; render(); } }, '고치기 취소') : null));
+    var mByDate = {};
+    L.measuredActuals(db.measures, db.processes, db.kinds).forEach(function (m) { if (m.lineDone != null) mByDate[m.date] = m.lineDone; });
+    var sync = L.syncMeasuredActual(db.daily, db.measures, db.processes, db.settings, db.kinds);
+    function measCell(r) {
+      var mv = mByDate[r.date];
+      if (mv == null) return '-';
+      if (r.actualSrc === 'measure') return h('span', { class: 'badge ok', title: '현장 측정에서 자동 반영' }, '측정 반영 ' + mv);
+      if (r.actual === mv) return h('span', { class: 'badge muted' }, '같음 ' + mv);
+      return h('span', { class: 'badge over', title: '손 입력 ' + r.actual + ' · 측정 ' + mv }, '측정 ' + mv + ' (차이 ' + (r.actual - mv > 0 ? '+' : '') + (r.actual - mv) + ')');
+    }
+    var conflictCard = sync.conflicts.length ? h('section', { class: 'card' }, h('h2', null, '측정값과 손 입력이 다른 날 (' + sync.conflicts.length + '일)'),
+      h('p', { class: 'note' }, '현장 측정의 라인 완성 대수(마지막 공정 완료 수)와 손으로 넣은 실제 대수가 다릅니다. 자동으로 덮어쓰지 않았습니다 — 날마다 골라 주세요. 하루 중 일부만 쟀다면 손 입력이 맞습니다.'),
+      table(['일자', '손 입력', '측정(라인 완성)', ''], sync.conflicts.map(function (c) {
+        return [L.dayLabel(c.date) + ' ' + c.date.slice(0, 4), c.manual + '대', c.measured + '대',
+          h('span', { class: 'btn-row' },
+            h('button', { type: 'button', class: 'btn btn-sm btn-primary', onclick: function () { db.daily = L.resolveMeasured(db.daily, c.date, 'measure', c.measured); db.sample = false; save(); toast(c.date + ' 실제 대수를 측정값 ' + c.measured + '대로 바꿨습니다.'); render(); } }, '측정값 쓰기'),
+            h('button', { type: 'button', class: 'btn btn-sm', onclick: function () { db.daily = L.resolveMeasured(db.daily, c.date, 'manual', c.measured); save(); toast(c.date + ' 손 입력 ' + c.manual + '대를 유지합니다.'); render(); } }, '입력값 유지'))];
+      }), { num: [0, 1, 1, 0] })) : null;
     var rows = db.daily.slice().reverse().map(function (r) {
       var rt = r.target > 0 && r.actual != null ? r.actual / r.target : null;
-      return { cls: rt != null && rt < goal() ? 'below' : null, tdCls: { 4: rt == null ? '' : rt >= goal() ? 'ok' : 'bad' }, cells: [L.dayLabel(r.date) + ' ' + r.date.slice(0, 4), r.target == null ? '-' : r.target, r.actual == null ? '-' : r.actual,
-        r.actual != null && r.target != null ? r.actual - r.target : '-', pct(rt), r.workers == null ? '-' : r.workers, r.availHr == null ? '-' : r.availHr, r.note || '',
+      return { cls: rt != null && rt < goal() ? 'below' : null, tdCls: { 5: rt == null ? '' : rt >= goal() ? 'ok' : 'bad' }, cells: [L.dayLabel(r.date) + ' ' + r.date.slice(0, 4), r.target == null ? '-' : r.target, r.actual == null ? '-' : r.actual,
+        measCell(r), r.actual != null && r.target != null ? r.actual - r.target : '-', pct(rt), r.workers == null ? '-' : r.workers, r.availHr == null ? '-' : r.availHr, r.note || '',
         h('span', { class: 'btn-row' }, h('button', { type: 'button', class: 'btn btn-sm', onclick: function () { ui.editDate = r.date; render(); window.scrollTo(0, 0); } }, '고치기'),
           h('button', { type: 'button', class: 'btn btn-sm btn-danger', onclick: function () { if (confirm(r.date + ' 실적을 지울까요?')) { db.daily = db.daily.filter(function (x) { return x.date !== r.date; }); save(); render(); } } }, '지우기'))] };
     });
     return [
-      pageHead('데이터', '일일 실적', '날짜마다 목표 대수·실제 생산 대수·투입 인원·가용시간을 기록합니다. 같은 날짜를 다시 넣으면 새 값으로 바뀝니다.'),
+      pageHead('데이터', '일일 실적', '날짜마다 목표 대수·실제 생산 대수·투입 인원·가용시간을 기록합니다. 같은 날짜를 다시 넣으면 새 값으로 바뀝니다. 현장 측정을 하면 라인 완성 대수(마지막 공정 완료 수)가 실제 대수에 자동으로 들어갑니다.'),
+      conflictCard,
       form,
       importCard('daily'),
       h('section', { class: 'card' }, h('h2', null, '쌓인 일일 실적 (' + db.daily.length + '일)'),
@@ -388,7 +481,7 @@
           db.daily.length ? h('button', { type: 'button', class: 'btn', onclick: function () {
             writeXlsx('프레임_일일실적_' + today() + '.xlsx', [{ name: '일일 실적', aoa: [L.DAILY_FIELDS.map(function (f) { return f.label; })].concat(db.daily.map(function (r) { return [r.date, r.target, r.actual, r.workers, r.availHr, r.note]; })) }]);
           } }, '엑셀로 내려받기') : null),
-        db.daily.length ? table(['일자', '목표', '실제', '차이', '달성률', '인원', '가용(HR)', '비고', ''], rows, { num: [0, 1, 1, 1, 1, 1, 1, 0, 0] }) : h('p', { class: 'note' }, '아직 없습니다.'))
+        db.daily.length ? table(['일자', '목표', '실제', '측정', '차이', '달성률', '인원', '가용(HR)', '비고', ''], rows, { num: [0, 1, 1, 0, 1, 1, 1, 1, 0, 0] }) : h('p', { class: 'note' }, '아직 없습니다.'))
     ];
   }
 
@@ -456,6 +549,7 @@
           } }, '지우기')),
         h('div', { class: 'form-grid' },
           fld('순서', num('seq')), fld('공정 이름', name), fld('담당 인원(명)', num('workers')),
+          fld('하루 CAPA(대/일)', num('capa'), '이 공정이 하루에 끝낼 수 있는 대수. 현장 측정 완료 수와 비교해 지연을 봅니다(기본 ' + L.DEFAULT_CAPA + ').'),
           fld('표준 공수(인·분/대)', num('stdMin', '0.1'), '한 대에 이 공정에서 드는 사람 시간의 합. 모르면 비워 두고 측정 후 채웁니다.'),
           fld('작업 요점', txt('points', '작업 순서·요령'), null, 'span-all'), fld('품질 주의', txt('quality')), fld('안전 주의', txt('safety'))));
     }
@@ -470,14 +564,15 @@
         if (x.old && x.old !== x.p.name) db.measures.forEach(function (m) { if (L.norm(m.process) === L.norm(x.old)) { m.process = x.p.name; renamed++; } });
       });
       db.processes = L.sortProcesses(cleaned.map(function (x) { return x.p; }));
+      var sy = syncFromMeasures(); // 공정 순서가 바뀌면 라인 끝 공정이 바뀔 수 있음
       save();
-      if (!quiet) { toast('공정 설정을 저장했습니다.' + (renamed ? ' 측정 기록 ' + renamed + '행의 공정 이름도 바꿨습니다.' : '')); render(); }
+      if (!quiet) { toast('공정 설정을 저장했습니다.' + (renamed ? ' 측정 기록 ' + renamed + '행의 공정 이름도 바꿨습니다.' : '') + syncNote(sy)); render(); }
       return true;
     }
     var total = list.reduce(function (s, p) { return s + (p.workers || 0); }, 0);
     var stdLa = L.lineAnalysis(L.processStats([], list), tk, { source: 'standard' });
     return [
-      pageHead('설정', '공정 설정', '프레임 제작 공정의 순서·표준시간·담당 인원을 적습니다. 병목 분석의 「표준」 기준, 인원 배분 시뮬레이터, 표준작업서가 이 값을 씁니다.'),
+      pageHead('설정', '공정 설정', '프레임 제작 공정의 순서·표준시간·담당 인원·하루 CAPA 를 적습니다. 병목 분석의 「표준」 기준, 인원 배분 시뮬레이터, 표준작업서, 공정별 진행 현황이 이 값을 씁니다. 마지막 공정의 완료 수가 일일 실적의 실제 대수로 들어갑니다.'),
       h('div', { class: 'tiles' },
         tile('공정 수', list.length + '개'), tile('담당 인원 합', total + '명', '현재 인원 ' + (db.settings.workers != null ? db.settings.workers + '명(설정)' : '-')),
         tile('택트타임', tk.taktMin == null ? '-' : m1(tk.taktMin) + '분/대', tk.source),
@@ -493,8 +588,61 @@
             save(); render();
           } }, '공정 더하기'),
           h('button', { type: 'button', class: 'btn btn-primary', onclick: function () { saveAll(false); } }, '저장'))),
-      h('p', { class: 'note' }, '사이클타임 = 표준 공수 ÷ 담당 인원 — 작업을 인원끼리 나눌 수 있다고 보는 단순 모델입니다. 한 사람만 할 수 있는 작업이 있으면 기획서 10장에 적어 확인합니다.')
+      h('p', { class: 'note' }, '사이클타임 = 표준 공수 ÷ 담당 인원 — 작업을 인원끼리 나눌 수 있다고 보는 단순 모델입니다. 한 사람만 할 수 있는 작업이 있으면 기획서 10장에 적어 확인합니다.'),
+      kindsCard()
     ];
+  }
+
+  /* ── 측정 항목(구간 종류) 편집 — 이름 바꾸기 · 더하기 · 순서 · 숨기기 · 분류 ──
+     기록은 항목 id 로 남으므로 이름을 바꾸면 지난 기록도 새 이름으로 보이고, 계산은 분류로 합니다. */
+  function kindsCard() {
+    var draft = db.kinds.map(function (k) { return Object.assign({}, k); });
+    var count = {}; db.measures.forEach(function (m) { count[m.kind] = (count[m.kind] || 0) + 1; });
+    var box = h('div', { class: 'kind-list' });
+    function paint() {
+      box.innerHTML = '';
+      draft.forEach(function (k, i) {
+        var name = inp({ value: k.name, 'aria-label': (i + 1) + '번째 항목 이름', maxlength: '20' });
+        name.addEventListener('input', function () { k.name = name.value; });
+        var cat = h('select', { 'aria-label': k.name + ' 분류' }, L.CATS.map(function (c) { var o = h('option', { value: c.id }, c.label); if (c.id === k.cat) o.selected = true; return o; }));
+        cat.addEventListener('change', function () { k.cat = cat.value; });
+        var hide = inp({ type: 'checkbox' }); hide.checked = !!k.hidden;
+        hide.addEventListener('change', function () { k.hidden = hide.checked; });
+        var isDefault = L.KINDS.indexOf(k.id) >= 0, n = count[k.id] || 0;
+        box.appendChild(h('div', { class: 'kind-row' + (k.hidden ? ' is-hidden' : '') },
+          h('span', { class: 'kr-move' },
+            h('button', { type: 'button', class: 'btn btn-sm', 'aria-label': k.name + ' 위로', disabled: i === 0, onclick: function () { draft.splice(i - 1, 0, draft.splice(i, 1)[0]); paint(); } }, '위'),
+            h('button', { type: 'button', class: 'btn btn-sm', 'aria-label': k.name + ' 아래로', disabled: i === draft.length - 1, onclick: function () { draft.splice(i + 1, 0, draft.splice(i, 1)[0]); paint(); } }, '아래')),
+          h('span', { class: 'kr-name' }, name), h('span', { class: 'kr-cat' }, cat),
+          h('label', { class: 'kr-hide' }, hide, ' 숨기기'),
+          h('span', { class: 'kr-count note' }, '기록 ' + n + '건'),
+          !isDefault && !n ? h('button', { type: 'button', class: 'btn btn-sm btn-danger', onclick: function () { draft.splice(i, 1); paint(); } }, '빼기') : null));
+      });
+    }
+    paint();
+    var ctSetup = inp({ type: 'checkbox' }); ctSetup.checked = !!db.settings.ctSetup;
+    function saveKinds() {
+      var names = draft.map(function (k) { return L.norm(k.name); });
+      if (names.some(function (n) { return !n; })) { toast('이름이 빈 항목이 있습니다.', true); return; }
+      if (names.some(function (n, i) { return names.indexOf(n) !== i; }) || names.indexOf(L.norm(L.PAUSE)) >= 0) { toast('항목 이름이 겹칩니다(「일시정지」는 고정 항목이라 쓸 수 없습니다).', true); return; }
+      var before = draft.filter(function (k) { return k.cat === 'work' && !k.hidden; }).length;
+      db.kinds = L.cleanKinds(draft);
+      db.settings.ctSetup = ctSetup.checked;
+      var sy = syncFromMeasures();   // 「작업 시간」 분류가 바뀌면 완료 대수가 바뀔 수 있음
+      save();
+      toast('측정 항목을 저장했습니다. 지난 기록 ' + db.measures.length + '행도 새 이름 · 분류로 보입니다.' + (before ? '' : ' 보이는 「작업 시간」 항목이 하나는 있어야 해서 하나를 다시 보이게 했습니다.') + syncNote(sy));
+      render();
+    }
+    return h('section', { class: 'card', id: 'kinds' }, h('h2', null, '측정 항목 (스톱워치 · 측정표의 구분)'),
+      h('p', { class: 'note' }, '현장에 맞게 이름을 바꾸거나 항목을 더하고, 순서 · 숨기기를 정합니다. 숨긴 항목은 스톱워치 · 측정표에서만 빠지고 지난 기록과 계산에는 남습니다. 기록은 항목으로 저장되어 이름을 바꿔도 지난 기록이 새 이름으로 따라갑니다.'),
+      h('ul', { class: 'note' }, L.CATS.map(function (c) { return h('li', null, h('strong', null, c.label), ' — ' + c.hint); }),
+        h('li', null, h('strong', null, '일시정지'), ' — 고정 항목. 스톱워치 「일시정지」 동안의 시간으로, 사이클타임 · 손실에서 빠지고 비작업 시간에 보입니다.')),
+      box,
+      h('label', { class: 'check-line' }, ctSetup, ' 사이클타임에 준비(세팅) 시간을 넣기 — 끄면(기본) 세팅은 비작업 시간으로만 봅니다'),
+      h('div', { class: 'btn-row submit-bar' },
+        h('button', { type: 'button', class: 'btn', onclick: function () { draft.push({ id: 'k' + Date.now().toString(36), name: '새 항목 ' + (draft.length + 1), cat: 'loss', hidden: false }); paint(); } }, '항목 더하기'),
+        h('button', { type: 'button', class: 'btn btn-primary', onclick: saveKinds }, '측정 항목 저장')),
+      h('p', { class: 'note' }, ctDefinition()));
   }
 
   /* ── 현장 측정 ─────────────────────────── */
@@ -505,20 +653,28 @@
     var r = L.swSwitch(db.running, kind, Date.now(), { worker: ui.sw.worker, process: ui.sw.process, unit: ui.sw.unit });
     keepClosed(r.closed); db.running = r.state; save(); render();
   }
+  function pressPause() {
+    if (!db.running) return;
+    var paused = L.swPaused(db.running);
+    var r = paused ? L.swResume(db.running, Date.now(), L.mainWorkKind(db.kinds)) : L.swPause(db.running, Date.now());
+    keepClosed(r.closed); db.running = r.state; save(); render();
+  }
   function pressNext() {
     if (!db.running) { toast('측정 중이 아닙니다.', true); return; }
-    var r = L.swNextUnit(Object.assign({}, db.running, { worker: ui.sw.worker, process: ui.sw.process }), Date.now());
+    var r = L.swNextUnit(Object.assign({}, db.running, { worker: ui.sw.worker, process: ui.sw.process }), Date.now(), L.mainWorkKind(db.kinds));
     keepClosed(r.closed); db.running = r.state; ui.sw.unit = r.state.unit; save(); render();
   }
-  function pressStop() {
-    var r = L.swStop(db.running, Date.now());
+  function pressStop(done) {
+    var r = L.swStop(db.running, Date.now(), { done: done === true });
     keepClosed(r.closed); db.running = null; save(); render();
   }
   function keepClosed(seg) {
     if (!seg) return;
-    db.measures = L.mergeMeasures(db.measures, [seg]).records;
+    db.measures = L.mergeMeasures(db.measures, [seg], db.kinds).records;
     db.sample = false;
     ui.lastSeg = L.measureKey(seg);
+    var sy = syncFromMeasures();
+    if (seg.done && (sy.stat.added || sy.stat.updated)) toast(seg.process + ' ' + (seg.unit || '') + '번 대 완료 —' + syncNote(sy));
   }
   function stopwatchCard() {
     var procs = L.sortProcesses(db.processes);
@@ -532,33 +688,47 @@
     pSel.addEventListener('change', function () { ui.sw.process = pSel.value; });
     var uIn = inp({ value: ui.sw.unit, inputmode: 'numeric' });
     uIn.addEventListener('input', function () { ui.sw.unit = uIn.value; });
-    var run = db.running;
-    var timeEl = h('span', { class: 'sw-time', id: 'swTime' }, run ? L.fmtDur((Date.now() - run.startMs) / 1000) : '0:00');
+    var run = db.running, paused = L.swPaused(run), el = L.swElapsed(run, Date.now());
+    var timeEl = h('span', { class: 'sw-time', id: 'swTime' }, L.fmtDur(el.sec));
+    var pauseEl = h('span', { class: 'sw-pause', id: 'swPause' }, paused ? '일시정지 ' + L.fmtDur(el.pauseSec) : '');
     clearInterval(swTimer);
-    if (run) swTimer = setInterval(function () { var e = document.getElementById('swTime'); if (!e || !db.running) { clearInterval(swTimer); return; } e.textContent = L.fmtDur((Date.now() - db.running.startMs) / 1000); }, 1000);
-    function kbtn(kind, cls) { return h('button', { type: 'button', class: 'btn ' + (cls || ''), 'aria-pressed': run && run.kind === kind ? 'true' : 'false', onclick: function () { pressKind(kind); } }, kind); }
+    if (run) swTimer = setInterval(function () {
+      var e = document.getElementById('swTime'), pe = document.getElementById('swPause');
+      if (!e || !db.running) { clearInterval(swTimer); return; }
+      var x = L.swElapsed(db.running, Date.now());
+      e.textContent = L.fmtDur(x.sec); if (pe) pe.textContent = L.swPaused(db.running) ? '일시정지 ' + L.fmtDur(x.pauseSec) : '';
+    }, 1000);
+    var work = L.mainWorkKind(db.kinds);
+    var KCLS = { work: '', setup: 'btn-rest', loss: 'btn-loss', rest: 'btn-rest' };
+    function kbtn(k) { return h('button', { type: 'button', class: 'btn ' + (k.id === '대기' ? 'btn-wait' : KCLS[k.cat] || ''), 'aria-pressed': run && run.kind === k.id ? 'true' : 'false', onclick: function () { pressKind(k.id); } }, k.name); }
+    var others = db.kinds.filter(function (k) { return !k.hidden && k.id !== work; });
     var recent = db.measures.filter(function (m) { return m.date === today(); }).slice(-5).reverse();
     return h('section', { class: 'card' }, h('h2', null, '스톱워치 측정 (휴대폰)'),
       procs.length ? null : h('p', { class: 'alert warn' }, '공정 설정에 공정이 없습니다. 먼저 ', h('a', { href: '#/process' }, '공정 설정'), '에서 공정을 넣어 주세요.'),
       h('div', { class: 'form-grid' }, fld('작업자', [wIn, dl], '이름 대신 「작업자A」처럼 적어도 됩니다'), fld('공정', pSel),
         fld('대 번호', h('div', { class: 'unit-row' }, uIn, h('button', { type: 'button', class: 'btn', onclick: function () { ui.sw.unit = L.nextUnit(uIn.value); uIn.value = ui.sw.unit; } }, '+1')), '같은 날 같은 번호 = 같은 프레임')),
-      h('div', { class: 'sw' + (run ? ' running' : ''), style: 'margin-top:12px' },
+      h('div', { class: 'sw' + (run ? ' running' : '') + (paused ? ' paused' : ''), style: 'margin-top:12px' },
         h('div', { class: 'sw-status', 'aria-live': 'polite' },
-          h('span', { class: 'sw-kind' }, run ? run.kind + ' 중' : '측정 전 — 아래 단추로 시작'), timeEl,
-          run ? h('span', { class: 'sw-ctx' }, (run.worker || '(작업자 없음)') + ' · ' + run.process + ' · ' + (run.unit || '-') + '번 대 · ' + L.localHms(run.startMs) + ' 부터') : null),
+          h('span', { class: 'sw-kind' }, !run ? '측정 전 — 아래 단추로 시작' : paused ? '일시정지 중 — ' + kName(run.resumeKind) + ' 멈춤' : kName(run.kind) + ' 중'), timeEl, pauseEl,
+          run ? h('span', { class: 'sw-ctx' }, (run.worker || '(작업자 없음)') + ' · ' + run.process + ' · ' + (run.unit || '-') + '번 대 · ' + L.localHms(run.startMs) + ' 부터' + (paused ? ' 일시정지' : '')) : null),
         h('div', { class: 'sw-grid' },
-          h('button', { type: 'button', class: 'btn btn-primary wide', 'aria-pressed': run && run.kind === '작업' ? 'true' : 'false', onclick: function () { pressKind('작업'); } }, run && run.kind === '작업' ? '작업 중 (다시 누르면 새 구간)' : '작업 시작'),
-          kbtn('자재 준비', 'btn-loss'), kbtn('이동', 'btn-loss'), kbtn('대기', 'btn-wait'), kbtn('재작업', 'btn-loss'), kbtn('기타', 'btn-loss'),
+          h('button', { type: 'button', class: 'btn btn-primary wide', 'aria-pressed': run && run.kind === work ? 'true' : 'false', onclick: function () { pressKind(work); } }, run && run.kind === work ? kName(work) + ' 중 (다시 누르면 새 구간)' : kName(work) + ' 시작'),
+          h('button', { type: 'button', class: 'btn wide ' + (paused ? 'btn-primary' : 'btn-pause'), disabled: !run, 'aria-pressed': paused ? 'true' : 'false', onclick: pressPause },
+            paused ? '다시 시작 (' + kName(run.resumeKind) + ' 이어서)' : '일시정지'),
+          others.map(kbtn),
           h('button', { type: 'button', class: 'btn', disabled: !run, onclick: pressNext }, '다음 대'),
-          h('button', { type: 'button', class: 'btn btn-danger half', disabled: !run, onclick: pressStop }, '멈춤(기록 끝)'))),
+          h('button', { type: 'button', class: 'btn', disabled: !run, onclick: function () { pressStop(true); } }, '완료하고 멈춤'),
+          h('button', { type: 'button', class: 'btn btn-danger', disabled: !run, onclick: function () { pressStop(false); } }, '멈춤(미완료)'))),
       h('ul', { class: 'note' },
-        h('li', null, '단추를 누를 때마다 앞 구간을 닫고 새 구간을 엽니다. 작업 중에 자재를 찾으러 가면 「자재 준비」, 돌아와 다시 일하면 「작업」을 누릅니다.'),
-        h('li', null, '「다음 대」는 지금 구간을 닫고 대 번호를 하나 올려 작업으로 시작합니다. 화면을 닫거나 새로 고쳐도 측정 중인 구간은 이어집니다.'),
+        h('li', null, '단추를 누를 때마다 앞 구간을 닫고 새 구간을 엽니다. 작업 중에 자재를 찾으러 가면 「자재 준비」, 돌아와 다시 일하면 「' + kName(work) + '」을 누릅니다. 제품을 맞추는 시간은 「세팅」, 쉬는 시간은 「휴식」입니다(항목은 공정 설정에서 바꿉니다).'),
+        h('li', null, '「일시정지」를 누르면 지금 구간 시간이 멈추고, 멈춘 시간은 「일시정지」로 따로 남습니다(사이클타임 · 손실에서 빠지고 비작업 시간에 보임). 「다시 시작」을 누르면 멈췄던 항목으로 이어 잽니다. 새로 고쳐도 일시정지 상태가 이어집니다.'),
+        h('li', null, '「다음 대」는 지금 대를 완료로 닫고 대 번호를 하나 올려 작업으로 시작합니다. 그날 마지막 대는 「완료하고 멈춤」으로 끝냅니다. 화면을 닫거나 새로 고쳐도 측정 중인 구간은 이어집니다.'),
+        h('li', null, '완료한 대수는 날짜 × 공정별로 세어 아래 「공정별 진행 현황」에 CAPA 와 함께 보이고, 마지막 공정 완료 수는 그날 일일 실적의 실제 대수에 자동으로 들어갑니다(손으로 넣은 값은 덮어쓰지 않음).'),
         h('li', null, '한 휴대폰으로 한 사람을 잽니다. 여러 사람을 같이 잴 때는 사람마다 휴대폰을 쓰거나 종이 측정표를 씁니다.')),
       recent.length ? h('div', null, h('h3', null, '오늘 방금 기록한 구간'), h('ul', { class: 'recent' }, recent.map(function (m) {
         var memo = inp({ value: m.memo, placeholder: '메모(예: 브래킷 찾기)', 'aria-label': '메모' });
         memo.addEventListener('change', function () { m.memo = memo.value.trim(); save(); toast('메모를 저장했습니다.'); });
-        return h('li', null, m.start + '~' + m.end + ' · ' + (m.worker || '-') + ' · ' + m.process + ' · ' + (m.unit || '-') + '번 · ', h('strong', null, m.kind), ' ' + L.fmtDur(m.sec) + ' ', memo);
+        return h('li', null, m.start + '~' + m.end + ' · ' + (m.worker || '-') + ' · ' + m.process + ' · ' + (m.unit || '-') + '번 · ', h('strong', null, kName(m.kind)), ' ' + L.fmtDur(m.sec) + (m.done ? ' · 대 완료' : '') + ' ', memo);
       }))) : null);
   }
   function manualCard() {
@@ -566,11 +736,11 @@
     var d = inp({ type: 'date', value: today() }), w = inp({ list: 'workerList2' }), u = inp({ value: '1' }), s = inp({ type: 'time', step: '1' }), e = inp({ type: 'time', step: '1' }), memo = inp();
     var dl = h('datalist', { id: 'workerList2' }, workers().map(function (x) { return h('option', { value: x }); }));
     var p = h('select', null, procs.map(function (x) { return h('option', { value: x.name }, x.seq + '. ' + x.name); }));
-    var k = h('select', null, L.KINDS.map(function (x) { return h('option', { value: x }, x); }));
+    var k = h('select', null, db.kinds.filter(function (x) { return !x.hidden; }).concat([{ id: L.PAUSE, name: '일시정지' }]).map(function (x) { return h('option', { value: x.id }, x.name); }));
     return h('details', { class: 'card' }, h('summary', null, '손으로 한 행 넣기 (종이 측정표 옮겨 적기)'),
       h('div', { class: 'form-grid', style: 'margin-top:10px' }, fld('측정일', d), fld('작업자', [w, dl]), fld('공정', p), fld('대 번호', u), fld('구분', k), fld('시작', s), fld('종료', e), fld('메모', memo, null, 'span-all')),
       h('div', { class: 'btn-row', style: 'margin-top:10px' }, h('button', { type: 'button', class: 'btn btn-primary', onclick: function () {
-        var c = L.cleanMeasure({ date: d.value, worker: w.value, process: p.value, unit: u.value, kind: k.value, start: s.value, end: e.value, memo: memo.value });
+        var c = L.cleanMeasure({ date: d.value, worker: w.value, process: p.value, unit: u.value, kind: k.value, start: s.value, end: e.value, memo: memo.value }, db.kinds);
         if (!c) { toast('측정일·공정·구분·시작·종료를 모두 넣어 주세요.', true); return; }
         keepClosed(c); save(); toast('한 행을 더했습니다(' + L.fmtDur(c.sec) + ').');
         s.value = e.value; e.value = ''; memo.value = '';
@@ -578,12 +748,17 @@
   }
   function blankSheetHtml() {
     var procs = L.sortProcesses(db.processes).map(function (p) { return p.seq + '.' + p.name; }).join('  ');
+    function esc(t) { return String(t).replace(/&/g, '&amp;').replace(/</g, '&lt;'); }
+    var vis = db.kinds.filter(function (k) { return !k.hidden; });
+    var kindsTxt = esc(vis.map(function (k) { return k.name; }).concat(['일시정지']).join(' · '));
     var rows = '';
-    for (var i = 1; i <= 22; i++) rows += '<tr><td>' + i + '</td><td></td><td class="kinds">작업 · 자재 · 이동 · 대기 · 재작업 · 기타</td><td>:</td><td>:</td><td></td></tr>';
+    for (var i = 1; i <= 22; i++) rows += '<tr><td>' + i + '</td><td></td><td class="kinds">' + kindsTxt + '</td><td>:</td><td>:</td><td></td></tr>';
+    var CL = { work: '작업 시간', setup: '준비(세팅)', loss: '손실', rest: '비작업' };
+    var guide = esc(vis.map(function (k) { return k.name + '(' + CL[k.cat] + ')'; }).join(' · ')) + ' · 일시정지(잠깐 멈춤)';
     return '<div class="blank-sheet"><h1>프레임 제작 현장 측정표</h1>' +
       '<div class="meta"><span>측정일:</span><span>측정자:</span><span>작업자:</span><span>공정:</span><span>쪽: &nbsp;&nbsp;/</span><span></span></div>' +
       '<table><thead><tr><th style="width:6%">No</th><th style="width:10%">대 번호</th><th style="width:36%">구분 (하나에 ○)</th><th style="width:11%">시작</th><th style="width:11%">종료</th><th>메모(손실 사유)</th></tr></thead><tbody>' + rows + '</tbody></table>' +
-      '<p class="foot">구분: 작업 = 순작업 · 자재 = 자재 준비(찾기·가져오기) · 이동 = 사람·물건 옮기기 · 대기 = 앞 공정·설비·지시를 기다림 · 재작업 = 불량 고치기 · 기타.<br>' +
+      '<p class="foot">구분: ' + guide + '.<br>' +
       '구분이 바뀔 때마다 한 줄씩, 시작·종료는 시:분(가능하면 초까지). 옮겨 적을 때는 이 도구의 「손으로 한 행 넣기」 또는 「빈 측정표 엑셀」에 적어 가져오기.' +
       (procs ? '<br>공정: ' + procs.replace(/</g, '&lt;') : '') + '</p></div>';
   }
@@ -605,16 +780,18 @@
     var list = db.measures.filter(function (m) { return !ui.measDay || m.date === ui.measDay; });
     var shown = list.slice(-300).reverse();
     return [
-      pageHead('측정', '현장 측정', '작업자별·공정별로 시작·종료 시각과 손실 유형(자재 준비·이동·대기·재작업·기타)을 잽니다. 공정별 시간이 없으면 2~3일 측정부터 시작합니다.'),
+      pageHead('측정', '현장 측정', '작업자별·공정별로 시작·종료 시각과 측정 항목(작업 · 세팅 · 손실 · 휴식 — 공정 설정에서 바꿈)을 잽니다. 잠깐 멈출 때는 「일시정지」. 공정별 시간이 없으면 2~3일 측정부터 시작합니다.'),
       stopwatchCard(),
+      days.length ? progressCard(ui.measDay || days[days.length - 1], { title: '공정별 진행 현황' }) : null,
+      progressMatrixCard(),
       h('section', { class: 'card' }, h('h2', null, '종이 측정표'),
         h('p', { class: 'note' }, '휴대폰을 쓰기 어려운 자리는 종이에 적고, 나중에 「손으로 한 행 넣기」나 엑셀로 옮깁니다. 빈 측정표 엑셀은 가져오기 열 이름과 같습니다.'),
         h('div', { class: 'btn-row' },
           h('button', { type: 'button', class: 'btn btn-primary', onclick: printBlank }, '빈 측정표 인쇄'),
           h('button', { type: 'button', class: 'btn', onclick: function () {
             var head = L.MEASURE_FIELDS.map(function (f) { return f.label.replace(/\(.*\)/, ''); });
-            var aoa = [head]; for (var i = 0; i < 30; i++) aoa.push(['', '', '', '', '', '', '', '']);
-            writeXlsx('프레임_현장측정표_빈양식.xlsx', [{ name: '측정 기록', aoa: aoa }, { name: '작성 방법', aoa: [['칸', '적는 법'], ['측정일', '2026-10-20 처럼. 같은 날이면 첫 행에만 적어도 됩니다'], ['작업자', '이름 또는 작업자A'], ['공정', '공정 설정의 이름과 같게'], ['대 번호', '같은 날 같은 번호 = 같은 프레임'], ['구분', '작업 · 자재 준비 · 이동 · 대기 · 재작업 · 기타'], ['시작·종료', '09:12 또는 09:12:30'], ['메모', '손실 사유 등']] }]);
+            var aoa = [head]; for (var i = 0; i < 30; i++) aoa.push(head.map(function () { return ''; }));
+            writeXlsx('프레임_현장측정표_빈양식.xlsx', [{ name: '측정 기록', aoa: aoa }, { name: '작성 방법', aoa: [['칸', '적는 법'], ['측정일', '2026-10-20 처럼. 같은 날이면 첫 행에만 적어도 됩니다'], ['작업자', '이름 또는 작업자A'], ['공정', '공정 설정의 이름과 같게'], ['대 번호', '같은 날 같은 번호 = 같은 프레임'], ['구분', db.kinds.filter(function (k) { return !k.hidden; }).map(function (k) { return k.name; }).concat(['일시정지']).join(' · ') + ' (공정 설정 「측정 항목」의 이름)'], ['시작·종료', '09:12 또는 09:12:30'], ['메모', '손실 사유 등'], ['대 완료', '그 대가 이 공정에서 끝난 행에 ○(비워 두면 「작업」 행이 있는 대를 끝난 것으로 셉니다)']] }]);
           } }, '빈 측정표 엑셀 받기'))),
       manualCard(),
       importCard('measure'),
@@ -622,15 +799,15 @@
         h('div', { class: 'filters', style: 'margin-bottom:10px' }, fld('측정일', daySel),
           h('div', { class: 'btn-row' },
             db.measures.length ? h('button', { type: 'button', class: 'btn', onclick: function () {
-              writeXlsx('프레임_현장측정_' + today() + '.xlsx', [{ name: '측정 기록', aoa: [['측정일', '작업자', '공정', '대 번호', '구분', '시작', '종료', '시간(초)', '메모']].concat(db.measures.map(function (m) { return [m.date, m.worker, m.process, m.unit, m.kind, m.start, m.end, m.sec, m.memo]; })) }]);
+              writeXlsx('프레임_현장측정_' + today() + '.xlsx', [{ name: '측정 기록', aoa: [['측정일', '작업자', '공정', '대 번호', '구분', '시작', '종료', '시간(초)', '메모', '대 완료']].concat(db.measures.map(function (m) { return [m.date, m.worker, m.process, m.unit, kName(m.kind), m.start, m.end, m.sec, m.memo, m.done === true ? '○' : m.done === false ? 'x' : '']; })) }]);
             } }, '엑셀로 내려받기') : null,
             ui.measDay ? h('button', { type: 'button', class: 'btn btn-danger', onclick: function () {
               if (!confirm(ui.measDay + ' 측정 기록 ' + list.length + '행을 지울까요?')) return;
-              db.measures = db.measures.filter(function (m) { return m.date !== ui.measDay; }); ui.measDay = ''; save(); render();
+              db.measures = db.measures.filter(function (m) { return m.date !== ui.measDay; }); ui.measDay = ''; syncFromMeasures(); save(); render();
             } }, '이 날 기록 지우기') : null)),
         list.length ? table(['측정일', '작업자', '공정', '대', '구분', '시작', '종료', '시간', '메모', ''], shown.map(function (m) {
-          return { cls: L.measureKey(m) === ui.lastSeg ? 'differs' : null, cells: [m.date.slice(5), m.worker || '-', m.process, m.unit || '-', m.kind === '작업' ? m.kind : h('span', { class: 'badge ' + (m.kind === '대기' ? 'over' : 'bn') }, m.kind), m.start, m.end, L.fmtDur(m.sec), m.memo,
-            h('button', { type: 'button', class: 'btn btn-sm btn-danger', 'aria-label': '이 행 지우기', onclick: function () { var k = L.measureKey(m); db.measures = db.measures.filter(function (x) { return L.measureKey(x) !== k; }); save(); render(); } }, '지우기')] };
+          return { cls: L.measureKey(m) === ui.lastSeg ? 'differs' : null, cells: [m.date.slice(5), m.worker || '-', m.process, m.unit || '-', [kCat(m.kind) === 'work' ? kName(m.kind) : h('span', { class: 'badge ' + (kCat(m.kind) === 'loss' ? (m.kind === '대기' ? 'over' : 'bn') : 'muted') }, kName(m.kind)), m.done ? [' ', h('span', { class: 'badge ok' }, '완료')] : null], m.start, m.end, L.fmtDur(m.sec), m.memo,
+            h('button', { type: 'button', class: 'btn btn-sm btn-danger', 'aria-label': '이 행 지우기', onclick: function () { var k = L.measureKey(m); db.measures = db.measures.filter(function (x) { return L.measureKey(x) !== k; }); syncFromMeasures(); save(); render(); } }, '지우기')] };
         }), { num: [0, 0, 0, 0, 0, 1, 1, 1, 0, 0] }) : h('p', { class: 'note' }, '아직 없습니다.'),
         list.length > shown.length ? h('p', { class: 'note' }, '최근 ' + shown.length + '행만 보입니다. 전체는 엑셀로 내려받아 보세요.') : null)
     ];
@@ -638,7 +815,7 @@
 
   /* ── 병목 분석 ─────────────────────────── */
   function analysisData(p) {
-    var st = L.processStats(db.measures, db.processes, { from: p.from, to: p.to });
+    var st = L.processStats(db.measures, db.processes, ko({ from: p.from, to: p.to }));
     var tk = L.taktInfo(db.daily, { from: p.from, to: p.to, settings: db.settings });
     return { st: st, tk: tk, la: L.lineAnalysis(st, tk, { source: ui.src }) };
   }
@@ -685,6 +862,7 @@
           ? h('p', { class: 'alert info' }, '이 기간에는 인원 배치가 다른 날의 측정이 섞여 있습니다(측정 인원이 소수로 나옴). 위의 「개선 전」「개선 후」처럼 배치가 같은 기간으로 나눠 보면 더 정확합니다.') : null,
         st.noUnit ? h('p', { class: 'alert warn' }, '대 번호가 빈 작업 구간 ' + st.noUnit + '개는 1구간을 1대로 셌습니다. 대 번호를 적으면 더 정확합니다.') : null,
         h('ul', { class: 'note' },
+          h('li', null, ctDefinition()),
           h('li', null, '판정은 손실을 뺀 순작업 사이클타임으로 합니다. 「대기」는 병목 앞뒤 공정에서 병목 때문에 생기는 결과일 때가 많아, 손실 포함 값은 참고로만 보여 줍니다.'),
           h('li', null, '측정 인원 = 그 공정에서 하루에 기록된 작업자 수의 평균입니다. 측정하지 않은 공정은 공정 설정의 인원을 씁니다.'),
           h('li', null, '하루 최대 대수 = 가용시간 ÷ 병목 사이클타임 — 손실이 전혀 없을 때의 상한입니다. 실제 대수와의 차이가 손실입니다.')))
@@ -698,23 +876,25 @@
     var procSel = h('select', { 'aria-label': '공정' }, h('option', { value: '' }, '모든 공정'));
     L.sortProcesses(db.processes).forEach(function (x) { var o = h('option', { value: x.name }, x.name); if (x.name === ui.lossProc) o.selected = true; procSel.appendChild(o); });
     procSel.addEventListener('change', function () { ui.lossProc = procSel.value; render(); });
-    var lp = L.lossPareto(db.measures, { from: p.from, to: p.to, process: ui.lossProc });
-    var st = L.processStats(db.measures, db.processes, { from: p.from, to: p.to });
-    var mtx = L.lossMatrix(db.measures, ui.lossBy, { from: p.from, to: p.to, processes: db.processes });
+    var lp = L.lossPareto(db.measures, ko({ from: p.from, to: p.to, process: ui.lossProc }));
+    var st = L.processStats(db.measures, db.processes, ko({ from: p.from, to: p.to }));
+    var mtx = L.lossMatrix(db.measures, ui.lossBy, ko({ from: p.from, to: p.to, processes: db.processes }));
+    var LC = lossCols(), tb = L.timeBreakdown(db.measures, ko({ from: p.from, to: p.to, process: ui.lossProc }));
     var units = st.rows.reduce(function (m, r) { return Math.max(m, r.units); }, 0);
     var workAll = st.rows.reduce(function (s, r) { return s + r.workSec; }, 0) / 60;
     var top = lp.rows[0];
     function bb(id, label) { return h('button', { type: 'button', 'aria-pressed': ui.lossBy === id ? 'true' : 'false', onclick: function () { ui.lossBy = id; render(); } }, label); }
     // 메모 — 유형별로 자주 나온 사유
     var memos = {};
-    db.measures.forEach(function (m) { if (L.isLoss(m.kind) && m.memo && (!p.from || m.date >= p.from) && (!p.to || m.date <= p.to) && (!ui.lossProc || m.process === ui.lossProc)) { var k = m.kind + '|' + m.memo; memos[k] = (memos[k] || 0) + m.sec; } });
+    db.measures.forEach(function (m) { if (kCat(m.kind) === 'loss' && m.memo && (!p.from || m.date >= p.from) && (!p.to || m.date <= p.to) && (!ui.lossProc || m.process === ui.lossProc)) { var k = kName(m.kind) + '|' + m.memo; memos[k] = (memos[k] || 0) + m.sec; } });
     var memoRows = Object.keys(memos).sort(function (a, b) { return memos[b] - memos[a]; }).slice(0, 15).map(function (k) { var x = k.split('|'); return [x[0], x.slice(1).join('|'), L.fmtN(memos[k] / 60, 0)]; });
     return [
-      pageHead('분석', '손실 분석', '측정한 손실시간을 유형별로 큰 순서대로 늘어놓아(파레토) 먼저 줄일 손실을 고릅니다.',
+      pageHead('분석', '손실 분석', '측정한 손실시간을 유형별로 큰 순서대로 늘어놓아(파레토) 먼저 줄일 손실을 고릅니다. 손실은 「측정 항목」에서 분류가 손실인 항목이고, 세팅 · 휴식 · 일시정지는 아래 「비작업 시간」에 따로 보입니다.',
         h('div', { class: 'btn-row no-print' }, h('button', { type: 'button', class: 'btn btn-primary', onclick: function () {
           var a = [['유형', '손실(분)', '건수', '비율', '누적']].concat(lp.rows.map(function (r) { return [r.type, L.round(r.min, 1), r.count, r.share == null ? '' : L.round(r.share * 100, 1) + '%', r.cum == null ? '' : L.round(r.cum * 100, 1) + '%']; }));
-          var mp = [['공정'].concat(L.LOSS_TYPES).concat(['손실 합(분)', '작업(분)', '손실 비율'])].concat(L.lossMatrix(db.measures, 'process', { from: p.from, to: p.to, processes: db.processes }).map(function (r) { return [r.key].concat(L.LOSS_TYPES.map(function (t) { return L.round(r.loss[t], 1); })).concat([L.round(r.total, 1), L.round(r.workMin, 1), r.lossShare == null ? '' : L.round(r.lossShare * 100, 1) + '%']); }));
-          writeXlsx('프레임_손실시간분석_' + (p.from || '') + '_' + (p.to || '') + '.xlsx', [{ name: '손실 파레토', aoa: a }, { name: '공정별 손실', aoa: mp }, { name: '손실 사유', aoa: [['유형', '메모', '손실(분)']].concat(memoRows) }]);
+          var mp = [['공정'].concat(LC.map(function (k) { return k.name; })).concat(['손실 합(분)', '작업(분)', '손실 비율'])].concat(L.lossMatrix(db.measures, 'process', ko({ from: p.from, to: p.to, processes: db.processes })).map(function (r) { return [r.key].concat(LC.map(function (k) { return L.round(r.loss[k.id], 1); })).concat([L.round(r.total, 1), L.round(r.workMin, 1), r.lossShare == null ? '' : L.round(r.lossShare * 100, 1) + '%']); }));
+          var nw = [['구분', '분류', '시간(분)', '건수']].concat(tb.rows.map(function (r) { return [r.name, CAT_LABEL[r.cat], L.round(r.min, 1), r.count]; })).concat([['비작업 합', '', L.round(tb.nonworkMin, 1), ''], ['측정 시간 합', '', L.round(tb.totalSec / 60, 1), '']]);
+          writeXlsx('프레임_손실시간분석_' + (p.from || '') + '_' + (p.to || '') + '.xlsx', [{ name: '손실 파레토', aoa: a }, { name: '공정별 손실', aoa: mp }, { name: '손실 사유', aoa: [['유형', '메모', '손실(분)']].concat(memoRows) }, { name: '비작업 시간', aoa: nw }]);
         } }, '엑셀로 내려받기'), h('button', { type: 'button', class: 'btn', onclick: function () { window.print(); } }, '인쇄'))),
       periodBar(fld('공정', procSel)),
       h('div', { class: 'tiles' },
@@ -728,18 +908,19 @@
         h('p', { class: 'note' }, '누적 비율이 80% 안쪽인 유형부터 줄이면 효과가 큽니다.')),
       h('section', { class: 'card' }, h('h2', null, (ui.lossBy === 'worker' ? '작업자' : '공정') + '별 손실 (분)'),
         h('div', { class: 'view-toggle no-print', role: 'group', 'aria-label': '묶는 기준', style: 'margin-bottom:10px' }, bb('process', '공정별'), bb('worker', '작업자별')),
-        table([ui.lossBy === 'worker' ? '작업자' : '공정'].concat(L.LOSS_TYPES).concat(['손실 합', '작업', '손실 비율']), mtx.map(function (r) {
-          return [r.key].concat(L.LOSS_TYPES.map(function (t) { return r.loss[t] ? L.fmtN(r.loss[t], 0) : '-'; })).concat([L.fmtN(r.total, 0), L.fmtN(r.workMin, 0), pct(r.lossShare)]);
-        }), { num: nums(L.LOSS_TYPES.length + 4) }),
+        table([ui.lossBy === 'worker' ? '작업자' : '공정'].concat(LC.map(function (k) { return k.name; })).concat(['손실 합', '작업', '손실 비율']), mtx.map(function (r) {
+          return [r.key].concat(LC.map(function (k) { return r.loss[k.id] ? L.fmtN(r.loss[k.id], 0) : '-'; })).concat([L.fmtN(r.total, 0), L.fmtN(r.workMin, 0), pct(r.lossShare)]);
+        }), { num: nums(LC.length + 4) }),
         ui.lossBy === 'worker' ? h('p', { class: 'note' }, '작업자별 표는 사람을 평가하려는 것이 아니라, 배치·자재 공급 때문에 기다리는 자리를 찾기 위한 것입니다.') : null),
-      memoRows.length ? h('section', { class: 'card' }, h('h2', null, '자주 적힌 손실 사유 (메모)'), table(['유형', '메모', '손실(분)'], memoRows, { num: [0, 0, 1] })) : null
+      memoRows.length ? h('section', { class: 'card' }, h('h2', null, '자주 적힌 손실 사유 (메모)'), table(['유형', '메모', '손실(분)'], memoRows, { num: [0, 0, 1] })) : null,
+      timeCard(tb, '비작업 시간 (세팅 · 휴식 · 일시정지)' + (ui.lossProc ? ' — ' + ui.lossProc : ''))
     ];
   }
 
   /* ── 인원 배분 시뮬레이터 ───────────────── */
   function simBase() {
     var p = period();
-    var st = L.processStats(db.measures, db.processes, { from: p.from, to: p.to });
+    var st = L.processStats(db.measures, db.processes, ko({ from: p.from, to: p.to }));
     var tk = L.taktInfo(db.daily, { from: p.from, to: p.to, settings: db.settings });
     var rows = st.rows.map(function (r) {
       var work = r.workMin != null ? r.workMin : r.stdMin;
@@ -797,7 +978,7 @@
           series: [{ name: '지금', values: before.rows.map(function (r) { return r.ct; }), color: 'var(--series-plan)' }, { name: '바꾼 뒤', values: after.rows.map(function (r) { return isFinite(r.ct) ? r.ct : null; }), color: 'var(--series-after)' }] }),
         h('ul', { class: 'note' },
           h('li', null, '대당 공수는 이 기간 측정의 순작업 공수(없으면 공정 설정의 표준 공수)입니다. 공수 줄임(%)은 자재 키트·지그 개선 같은 작업 방법 개선을 가정해 넣는 값입니다.'),
-          h('li', null, '예상 대수는 손실이 없을 때의 상한입니다. 자재 준비·이동·대기·재작업을 줄여야 실제 대수가 상한에 가까워집니다.'),
+          h('li', null, '예상 대수는 손실이 없을 때의 상한입니다. 손실(측정 항목에서 손실로 분류한 자재 준비 · 이동 · 대기 등)을 줄여야 실제 대수가 상한에 가까워집니다.'),
           h('li', null, '사람을 옮길 수 있는지(자격·숙련·안전)는 현장에서 확인해야 합니다. 이 계산은 작업을 인원끼리 나눌 수 있다고 봅니다.')))
     ];
   }
@@ -845,9 +1026,9 @@
         tile('대당 절감액', cmp.saving == null ? '-' : L.fmtWon(cmp.saving), cmp.annual != null ? '연간 ' + L.fmtWon(cmp.annual) : '대당 투입공수 ' + L.fmtN(A.total.perUnitManHr, 2) + ' → ' + L.fmtN(B.total.perUnitManHr, 2) + '인·시', k.costDown == null ? '' : k.costDown ? 'ok' : 'bad'),
         tile('절감률', pct(cmp.savingRate), cmp.costBefore ? L.fmtWon(cmp.costBefore.total) + ' → ' + L.fmtWon(cmp.costAfter.total) : '임률 입력 필요')),
       h('div', { class: 'charts' },
-        C.figure('대당 손실 공수(인·분/대, 측정)', { type: 'bar', labels: L.LOSS_TYPES, unit: '분', series: [
-          { name: '개선 전', values: L.LOSS_TYPES.map(function (t) { return A.lossByType[t]; }), color: 'var(--series-plan)' },
-          { name: '개선 후', values: L.LOSS_TYPES.map(function (t) { return B.lossByType[t]; }), color: 'var(--series-after)' }] }),
+        C.figure('대당 손실 공수(인·분/대, 측정)', { type: 'bar', labels: lossCols().map(function (k) { return k.name; }), unit: '분', series: [
+          { name: '개선 전', values: lossCols().map(function (k) { return A.lossByType[k.id]; }), color: 'var(--series-plan)' },
+          { name: '개선 후', values: lossCols().map(function (k) { return B.lossByType[k.id]; }), color: 'var(--series-after)' }] }),
         C.figure('공정별 사이클타임(분/대, 측정)', { type: 'bar', labels: A.line.rows.map(function (r) { return shortName(r.name); }), unit: '분', refLines: B.line.taktMin ? [{ value: B.line.taktMin, label: '택트' }] : [], series: [
           { name: '개선 전', values: A.line.rows.map(function (r) { return r.ct; }), color: 'var(--series-plan)' },
           { name: '개선 후', values: A.line.rows.map(function (r) { var x = B.line.rows.filter(function (y) { return y.name === r.name; })[0]; return x ? x.ct : null; }), color: 'var(--series-after)' }] })),
@@ -862,7 +1043,7 @@
     if (!procs.length) return [pageHead('표준화', '표준작업서 초안'), emptyNotice('공정 설정에 공정이 없습니다.')];
     var r = dataRange(), c = db.compare;
     var from = c.afterFrom || r.from, to = c.afterTo || r.to;
-    var st = L.processStats(db.measures, db.processes, { from: from, to: to });
+    var st = L.processStats(db.measures, db.processes, ko({ from: from, to: to }));
     var rows = L.sopRows(procs, st);
     var tk = L.taktInfo(db.daily, { from: from, to: to, settings: db.settings });
     var total = rows.reduce(function (s, x) { return s + (x.workers || 0); }, 0);
@@ -913,11 +1094,12 @@
     var tot = L.achieveTotal(db.daily, { from: p.from, to: p.to, settings: db.settings, goal: goal() });
     var weeks = L.achieveRows(db.daily, { unit: 'week', from: p.from, to: p.to, settings: db.settings, goal: goal() });
     var A = analysisData(p);
-    var lp = L.lossPareto(db.measures, { from: p.from, to: p.to });
-    var byP = L.lossMatrix(db.measures, 'process', { from: p.from, to: p.to, processes: db.processes });
-    var byW = L.lossMatrix(db.measures, 'worker', { from: p.from, to: p.to });
-    var memos = db.measures.filter(function (m) { return L.isLoss(m.kind) && m.memo && (!p.from || m.date >= p.from) && (!p.to || m.date <= p.to); })
-      .map(function (m) { return m.process + ' ' + m.kind + ': ' + m.memo; }).filter(function (x, i, a) { return a.indexOf(x) === i; });
+    var lp = L.lossPareto(db.measures, ko({ from: p.from, to: p.to }));
+    var byP = L.lossMatrix(db.measures, 'process', ko({ from: p.from, to: p.to, processes: db.processes }));
+    var byW = L.lossMatrix(db.measures, 'worker', ko({ from: p.from, to: p.to }));
+    var nonwork = L.timeBreakdown(db.measures, ko({ from: p.from, to: p.to }));
+    var memos = db.measures.filter(function (m) { return kCat(m.kind) === 'loss' && m.memo && (!p.from || m.date >= p.from) && (!p.to || m.date <= p.to); })
+      .map(function (m) { return m.process + ' ' + kName(m.kind) + ': ' + m.memo; }).filter(function (x, i, a) { return a.indexOf(x) === i; });
     var sim = null;
     if (db.sim && db.sim.workers && Object.keys(db.sim.workers).length) {
       var B = simBase();
@@ -928,7 +1110,7 @@
     var mask = db.maskWorkers !== false;
     var names = workers();
     if (mask) db.aliases = L.assignAliases(db.aliases, names);
-    var info = L.buildAnalysisPrompt({ period: p, total: tot, weeks: weeks, line: A.st.count ? A.la : null, pareto: lp, byProcess: byP, byWorker: byW, memos: memos, sim: sim, compare: cmp,
+    var info = L.buildAnalysisPrompt({ period: p, total: tot, weeks: weeks, line: A.st.count ? A.la : null, pareto: lp, byProcess: byP, byWorker: byW, memos: memos, kinds: db.kinds, nonwork: nonwork, sim: sim, compare: cmp,
       includeCost: db.includeCost, aliases: mask ? db.aliases : null, goal: goal() });
     var prompt = info.prompt;
     function back(t) { return mask ? L.unmaskText(t, db.aliases) : t; }
@@ -952,6 +1134,7 @@
         h('p', null, '택트타임 ' + m1(la.taktMin) + '분/대 · 병목 ' + (la.bottleneck ? la.bottleneck.name + ' ' + m1(la.maxCt) + '분/대' : '-') + ' · 병목 기준 하루 최대 ' + (la.capacity == null ? '-' : L.fmtN(la.capacity, 1) + '대') + ' · 라인 밸런스 효율 ' + pct(la.balance)),
         table(['공정', '인원', '사이클타임', '대당 손실', '판정'], la.rows.map(function (r) { return [r.name, r.workers == null ? '-' : L.fmtN(r.workers, 1), m1(r.ct), m1(r.lossMin), r.isBottleneck ? '병목' : r.over ? '택트 초과' : r.ct == null ? '-' : '여유']; }), { num: [0, 1, 1, 1, 0] })] : null,
       lp.count ? [h('h2', null, '3. 손실시간'), table(['유형', '손실(분)', '비율', '누적'], lp.rows.map(function (r) { return [r.type, L.fmtN(r.min, 0), pct(r.share), pct(r.cum)]; }), { num: [0, 1, 1, 1] })] : null,
+      nonwork.nonworkSec ? h('p', null, '비작업 시간(사이클타임 · 손실에서 뺌): ' + nonwork.rows.map(function (r) { return r.name + ' ' + L.fmtN(r.min, 0) + '분'; }).join(' · ') + ' — 합계 ' + L.fmtN(nonwork.nonworkMin, 0) + '분(측정 시간의 ' + pct(nonwork.nonworkShare) + ')') : null,
       sim ? [h('h2', null, '4. 인원 배분안 (시뮬레이션)'), table(['공정', '인원', '공수 줄임', '사이클타임'], sim.rows.map(function (r) { return [r.name, r.workers, r.cutPct ? r.cutPct + '%' : '-', m1(r.ct)]; }), { num: [0, 1, 1, 1] }),
         h('p', null, '총 ' + sim.totalWorkers + '명 · 병목 ' + (sim.bottleneck ? sim.bottleneck.name : '-') + ' · 하루 최대 ' + L.fmtN(sim.capacity, 1) + '대 · 예상 달성률 ' + pct(sim.expectedRate))] : null,
       cmp ? [h('h2', null, '5. 개선 전·후'), h('p', null, '달성률 ' + pct(cmp.before.total.rate) + ' → ' + pct(cmp.after.total.rate) + ' · 대당 투입공수 ' + L.fmtN(cmp.before.total.perUnitManHr, 2) + ' → ' + L.fmtN(cmp.after.total.perUnitManHr, 2) + '인·시' +

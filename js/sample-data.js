@@ -88,11 +88,19 @@
             rows.push({ date: day, worker: w, process: p.name, unit: String(unit), kind: kind, start: t, end: t + sec, memo: memo || '' });
             t += sec;
           }
+          /* 비작업 시간(v2.1) — 길이를 고정해 난수 순서를 바꾸지 않습니다(작업 · 손실 값은 v2.0 샘플과 같음) */
+          function fixed(kind, min, memo, unit) {
+            rows.push({ date: day, worker: w, process: p.name, unit: unit, kind: kind, start: t, end: t + min * 60, memo: memo || '' });
+            t += min * 60;
+          }
           for (var u = 1; u <= UNITS; u++) {
+            fixed('세팅', 3, u === 1 ? '지그 · 공구 맞춤' : '', String(u));
             plan.pre[p.name].forEach(function (x) { seg(x[0], x[1], x[2], u); });
             seg('작업', plan.work[p.name] / crew.length, '', u);
             if (plan.rework[w] && plan.rework[w].indexOf(u) >= 0) seg('재작업', plan.reworkMin, '비드 불량 재용접', u);
             plan.post[p.name].forEach(function (x) { seg(x[0], x[1], x[2], u); });
+            if (u === 2) fixed('휴식', 10, '오전 휴식', '');
+            if (u === 3 && w === '작업자B') fixed('일시정지', 4, '전화 응대', String(u));
           }
         });
       });

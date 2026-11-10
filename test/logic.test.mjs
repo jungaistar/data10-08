@@ -375,6 +375,212 @@ test('restoreDb — 깨진 값 걸러내기·기본값', () => {
   assert.equal(db.maskWorkers, false); assert.equal(db.running.process, '용접'); assert.equal(db.compare.beforeFrom, '2026-09-01');
   const e = L.restoreDb(null); assert.equal(e.daily.length, 0); assert.equal(e.maskWorkers, true); assert.equal(e.includeCost, false);
 });
+console.log('현장 측정 → 일일 실적 반영 · 공정 진행 (2026-11-10 요청)');
+const PR3 = [{ name: '절단', seq: 1, workers: 1, capa: 4 }, { name: '용접', seq: 2, workers: 2 }, { name: '검사', seq: 3, workers: 1, capa: 3 }];
+const hh = (n) => String(n).padStart(2, '0');
+const seg = (date, process, unit, kind, start, end, done, worker = '갑') => ({ date, worker, process, unit, kind, start, end, ...(done === undefined ? {} : { done }) });
+test('completions — 「다음 대」로 끝난 대만 셈(진행 중 제외) · 표시 없는 옛 기록은 작업 대를 셈', () => {
+  const ms = L.mergeMeasures([], [
+    seg('2026-11-10', '검사', '1', '작업', '08:00', '08:30', false), seg('2026-11-10', '검사', '1', '대기', '08:30', '08:35', true),   // 1번 대: 대기 구간에서 다음 대 → 완료
+    seg('2026-11-10', '검사', '2', '작업', '08:35', '09:00', false),                                                                 // 2번 대: 아직 하는 중
+    seg('2026-11-10', '절단', '1', '작업', '08:00', '08:20'), seg('2026-11-10', '절단', '2', '작업', '08:20', '08:40'),             // 표시 없음 → 2대
+    seg('2026-11-10', '절단', '', '대기', '08:40', '08:45')                                                                          // 대 번호 없는 손실은 대가 아님
+  ]).records;
+  const c = L.completions(ms);
+  const by = Object.fromEntries(c.map((x) => [x.process, x]));
+  assert.equal(by['검사'].done, 1); assert.equal(by['검사'].open, 1); assert.equal(by['절단'].done, 2);
+});
+test('syncMeasuredActual — 일일 실적이 없으면 새로 · 비었으면 채움 · 측정 반영 값은 따라 바뀜', () => {
+  const settings = L.cleanSettings({ target: 5 });
+  let ms = L.mergeMeasures([], [seg('2026-11-10', '검사', '1', '작업', '08:00', '08:30', true), seg('2026-11-11', '검사', '1', '작업', '08:00', '08:30', true)]).records;
+  const daily = L.mergeDaily([], [{ date: '2026-11-11', target: 4, actual: null, workers: 3 }]).records;
+  let r = L.syncMeasuredActual(daily, ms, PR3, settings);
+  assert.deepEqual(r.stat, { added: 1, updated: 1 }); assert.equal(r.conflicts.length, 0);
+  assert.deepEqual(r.records.map((x) => [x.date, x.target, x.actual, x.actualSrc]), [['2026-11-10', 5, 1, 'measure'], ['2026-11-11', 4, 1, 'measure']]);
+  assert.equal(r.records[1].workers, 3, '손으로 넣은 인원은 그대로');
+  ms = L.mergeMeasures(ms, [seg('2026-11-10', '검사', '2', '작업', '08:30', '09:00', true)]).records;   // 같은 날 한 대 더 끝남
+  r = L.syncMeasuredActual(r.records, ms, PR3, settings);
+  assert.equal(r.records[0].actual, 2); assert.deepEqual(r.stat, { added: 0, updated: 1 });
+  r = L.syncMeasuredActual(r.records, ms, PR3, settings);
+  assert.deepEqual(r.stat, { added: 0, updated: 0 }, '다시 돌려도 바뀌지 않음');
+  const back = L.restoreDb(JSON.parse(JSON.stringify({ daily: r.records })));
+  assert.equal(back.daily[0].actualSrc, 'measure', '저장 · 복원 후에도 출처 유지');
+});
+test('syncMeasuredActual — 측정이 없거나 라인 끝 공정 측정이 없으면 일일 실적을 건드리지 않음', () => {
+  const daily = L.mergeDaily([], [{ date: '2026-11-10', target: 4, actual: 3 }]).records;
+  let r = L.syncMeasuredActual(daily, [], PR3, {});
+  assert.deepEqual(r.stat, { added: 0, updated: 0 }); assert.equal(r.conflicts.length, 0); assert.equal(r.records[0].actual, 3);
+  const onlyCut = L.mergeMeasures([], [seg('2026-11-12', '절단', '1', '작업', '08:00', '08:20', true)]).records;   // 라인 끝(검사) 측정 없음
+  r = L.syncMeasuredActual(daily, onlyCut, PR3, {});
+  assert.equal(r.records.length, 1); assert.equal(L.measuredActuals(onlyCut, PR3)[0].lineDone, null);
+});
+test('syncMeasuredActual — 손 입력과 다르면 덮어쓰지 않고 차이를 알림 → 고르기', () => {
+  const ms = L.mergeMeasures([], [1, 2, 3].map((u) => seg('2026-11-10', '검사', String(u), '작업', hh(7 + u) + ':00', hh(7 + u) + ':30', true))).records;
+  const daily = L.mergeDaily([], [{ date: '2026-11-10', target: 4, actual: 4 }]).records;
+  let r = L.syncMeasuredActual(daily, ms, PR3, {});
+  assert.equal(r.records[0].actual, 4, '손 입력 유지'); assert.equal(r.records[0].actualSrc, undefined);
+  assert.deepEqual(r.conflicts, [{ date: '2026-11-10', manual: 4, measured: 3, line: '검사' }]);
+  const kept = L.resolveMeasured(r.records, '2026-11-10', 'manual', 3);
+  assert.equal(kept[0].actual, 4); assert.equal(L.syncMeasuredActual(kept, ms, PR3, {}).conflicts.length, 0, '「입력값 유지」를 고른 측정값은 다시 묻지 않음');
+  const ms4 = L.mergeMeasures(ms, [seg('2026-11-10', '검사', '9', '작업', '12:00', '12:30', true)]).records;
+  assert.equal(L.syncMeasuredActual(kept, ms4, PR3, {}).conflicts.length, 0, '측정이 4대가 되어 손 입력과 같아지면 충돌 없음');
+  const used = L.resolveMeasured(r.records, '2026-11-10', 'measure', 3);
+  assert.equal(used[0].actual, 3); assert.equal(used[0].actualSrc, 'measure');
+});
+test('processProgress — CAPA(기본 4) 대비 완료 · 사이클타임 > 택트 → 지연 공정', () => {
+  const db = L.emptyDb();
+  db.processes = L.sortProcesses(PR3);
+  db.daily = L.mergeDaily([], [{ date: '2026-11-10', target: 4, actual: null, availHr: 4 }]).records;      // 택트 = 240 ÷ 4 = 60분
+  db.measures = L.mergeMeasures([], [
+    ...[1, 2, 3, 4].map((u) => seg('2026-11-10', '절단', String(u), '작업', hh(7 + u) + ':00', hh(7 + u) + ':20', true)),
+    ...[1, 2].map((u) => seg('2026-11-10', '용접', String(u), '작업', hh(7 + u) + ':00', hh(7 + u) + ':50', true)),   // 2명 중 1명만 기록 → 사이클 50분, 완료 2 < 4
+    ...[1, 2, 3].map((u) => seg('2026-11-10', '검사', String(u), '작업', '1' + u + ':00', '1' + u + ':59', true))       // 사이클 59분, 완료 3 = CAPA 3
+  ]).records;
+  const pg = L.processProgress(db, '2026-11-10');
+  near(pg.takt, 60);
+  const by = Object.fromEntries(pg.rows.map((r) => [r.name, r]));
+  assert.equal(by['용접'].capa, 4, 'capa 가 없는 공정은 기본 4');
+  assert.equal(by['절단'].delayed, false); assert.equal(by['용접'].short, true); assert.equal(by['검사'].delayed, false);
+  assert.equal(pg.lineDone, 3); assert.deepEqual(pg.delayed.map((r) => r.name), ['용접']);
+  db.daily[0].availHr = 3.5;                                                                                  // 택트 52.5분 → 검사 59분은 시간 지연
+  const pg2 = L.processProgress(db, '2026-11-10');
+  assert.deepEqual(pg2.delayed.map((r) => r.name + (r.slow ? ':시간' : '') + (r.short ? ':수량' : '')), ['용접:수량', '검사:시간']);
+  const mx = L.progressMatrix(db, 14); assert.equal(mx.days.length, 1); assert.deepEqual(mx.names, ['절단', '용접', '검사']);
+});
+test('옛 자료 — capa · actualSrc · done 이 없어도 읽힘(기본값)', () => {
+  const db = L.restoreDb({ daily: [{ date: '2026-09-08', target: 10, actual: 8 }], processes: [{ name: '용접', workers: 2 }], measures: [{ date: '2026-09-08', process: '용접', unit: '1', kind: '작업', start: '08:00', end: '08:50' }] });
+  assert.equal(db.processes[0].capa, 4); assert.equal(db.daily[0].actualSrc, undefined); assert.equal(db.measures[0].done, undefined);
+  assert.equal(L.completions(db.measures)[0].done, 1, '표시 없는 옛 기록은 작업한 대를 셈');
+  assert.equal(L.cleanProcess({ name: 'x', capa: '0' }).capa, 4); assert.equal(L.cleanProcess({ name: 'x', capa: '6' }).capa, 6);
+});
+test('측정 엑셀 「대 완료」 칸 · 스톱워치 다음 대 / 이 대 완료', () => {
+  const p = L.parseMeasure([['측정일', '공정', '대 번호', '구분', '시작', '종료', '대 완료'], ['2026-11-10', '검사', '1', '작업', '08:00', '08:30', '○'], ['', '검사', '2', '작업', '08:30', '09:00', '']]);
+  assert.equal(p.det.map.done, 6); assert.equal(p.records[0].done, true); assert.equal(p.records[1].done, undefined);
+  const t0 = new Date(2026, 10, 10, 8, 0, 0).getTime();
+  let r = L.swSwitch(null, '작업', t0, { process: '검사', unit: '1' });
+  r = L.swSwitch(r.state, '대기', t0 + 60000); assert.equal(r.closed.done, false, '구간만 바꾸면 미완료');
+  r = L.swNextUnit(r.state, t0 + 120000); assert.equal(r.closed.done, true); assert.equal(r.closed.unit, '1');
+  const s = L.swStop(r.state, t0 + 180000, { done: true }); assert.equal(s.closed.done, true); assert.equal(s.closed.unit, '2');
+  assert.equal(L.swStop(r.state, t0 + 180000).closed.done, false);
+});
+test('가상 샘플 — 측정일마다 라인 완성 4대 · 손 입력(7~10대)과 달라 덮어쓰지 않음 · 개선 전 본용접 지연', () => {
+  const db = sampleDb();
+  const r = L.syncMeasuredActual(db.daily, db.measures, db.processes, db.settings);
+  assert.deepEqual(r.stat, { added: 0, updated: 0 }); assert.equal(r.conflicts.length, 5);
+  assert.ok(r.conflicts.every((c) => c.measured === 4 && c.manual >= 7));
+  assert.deepEqual(L.processProgress(db, '2026-09-08').delayed.map((x) => x.name), ['본용접']);
+  assert.deepEqual(L.processProgress(db, '2026-10-13').delayed.map((x) => x.name), []);
+});
+console.log('측정 항목 편집 · 일시정지 (2026-11-10 v2.1 요청)');
+const KM = (fn) => { const k = L.defaultKinds(); fn(k); return L.cleanKinds(k); };
+const TM = (kind, start, end, unit = '1', worker = '갑', process = '용접', date = '2026-11-10') => ({ date, worker, process, unit, kind, start, end });
+test('cleanKinds — 기본 8개 · 이름 겹침 · 모르는 분류 · 보이는 작업 항목이 하나는 남음 · 일시정지 이름은 못 씀', () => {
+  const d = L.cleanKinds(null);
+  assert.deepEqual(d.map((k) => k.id), ['작업', '세팅', '자재 준비', '이동', '대기', '재작업', '기타', '휴식']);
+  assert.deepEqual(d.map((k) => k.cat), ['work', 'setup', 'loss', 'loss', 'loss', 'loss', 'loss', 'rest']);
+  const c = L.cleanKinds([{ id: 'a', name: '작업', cat: 'work', hidden: true }, { id: 'b', name: '작업', cat: '??' }, { id: 'b', name: '중복 id' }, { id: 'c', name: '일시정지', cat: 'rest' }]);
+  assert.deepEqual(c.map((k) => [k.id, k.name, k.cat, k.hidden]), [['a', '작업', 'work', false], ['b', '작업 2', 'loss', false], ['c', '일시정지 2', 'rest', false]]);
+  const none = L.cleanKinds([{ id: 'x', name: '대기', cat: 'loss' }]);
+  assert.equal(none[0].cat, 'work'); assert.equal(L.mainWorkKind(none), none[0].id);
+});
+test('이름 바꾸기 — 기록은 id 로 남아 계산 그대로 · 엑셀 글자는 새 이름 · 옛 이름(별칭) 모두 읽음', () => {
+  const kinds = KM((k) => { k.find((x) => x.id === '대기').name = '설비 대기'; });
+  const ms = L.mergeMeasures([], M, kinds).records;
+  assert.ok(ms.every((m) => L.kindIndex(kinds).get(m.kind)), '모든 기록이 항목에 짝지어짐');
+  assert.equal(L.lossPareto(ms, { kinds }).rows[0].type, '설비 대기');
+  near(L.lossPareto(ms, { kinds }).totalMin, 105, 1e-6, '이름을 바꿔도 손실 합 같음');
+  near(L.processStats(ms, PROCS, { kinds }).rows.find((r) => r.name === '용접').ct, 52.5);
+  assert.equal(L.normKind('설비 대기', kinds), '대기'); assert.equal(L.normKind('대기', kinds), '대기'); assert.equal(L.normKind('기다림', kinds), '대기');
+  const p = L.parseMeasure([['측정일', '공정', '대 번호', '구분', '시작', '종료'], ['2026-11-10', '용접', 1, '설비 대기', '08:00', '08:05'], ['', '용접', 1, '세팅', '08:05', '08:08'], ['', '용접', 1, '일시정지', '08:08', '08:10']], { kinds });
+  assert.deepEqual(p.records.map((r) => r.kind), ['대기', '세팅', '일시정지']); assert.equal(p.warnings.length, 0);
+  // 내려받은 엑셀(이름) → 다시 가져오기 → 같은 id
+  const back = L.parseMeasure([['측정일', '공정', '대 번호', '구분', '시작', '종료']].concat(ms.map((m) => [m.date, m.process, m.unit, L.kindName(kinds, m.kind), m.start, m.end])), { kinds });
+  assert.deepEqual(back.records.map((r) => r.kind), ms.map((m) => m.kind));
+});
+test('이름을 서로 바꿔도(대기 ↔ 이동) 저장된 기록은 id 로 그대로 · 글자는 지금 이름으로', () => {
+  const kinds = KM((k) => { k.find((x) => x.id === '대기').name = '이동'; k.find((x) => x.id === '이동').name = '대기'; });
+  assert.equal(L.cleanMeasure(TM('대기', '08:00', '08:10'), kinds).kind, '대기', '저장된 id');
+  assert.equal(L.normKind('대기', kinds), '이동', '엑셀 글자 「대기」는 지금 「대기」라는 이름의 항목');
+});
+test('항목 더하기 · 분류로 계산 — 손실 항목은 파레토에, 비작업은 사이클타임 · 손실에서 빠짐, 분류를 바꾸면 계산이 따라감', () => {
+  const kinds = L.cleanKinds(L.defaultKinds().concat([{ id: 'k1', name: '설비 고장', cat: 'loss' }, { id: 'k2', name: '안전 교육', cat: 'rest' }]));
+  const ms = L.mergeMeasures([], [TM('작업', '08:00', '08:40'), TM('k1', '08:40', '08:50'), TM('k2', '08:50', '09:20'), TM('대기', '09:20', '09:25')], kinds).records;
+  const st = L.processStats(ms, [{ name: '용접', workers: 1 }], { kinds }).rows[0];
+  near(st.ct, 40); near(st.lossSec, 15 * 60); near(st.restSec, 30 * 60);
+  assert.deepEqual(L.lossPareto(ms, { kinds }).rows.filter((r) => r.sec).map((r) => r.type), ['설비 고장', '대기']);
+  const tb = L.timeBreakdown(ms, { kinds });
+  assert.deepEqual(tb.rows.map((r) => [r.name, r.min]), [['안전 교육', 30]]); near(tb.nonworkShare, 30 / 85);
+  const asRest = kinds.map((k) => (k.id === '대기' ? { ...k, cat: 'rest' } : k));
+  near(L.lossPareto(ms, { kinds: asRest }).totalMin, 10, 1e-6, '대기를 비작업으로 바꾸면 손실에서 빠짐');
+  near(L.lossMatrix(ms, 'process', { kinds: asRest })[0].total, 10);
+  const hid = kinds.map((k) => (k.id === '이동' ? { ...k, hidden: true } : k));
+  assert.ok(!L.lossPareto(ms, { kinds: hid }).rows.some((r) => r.type === '이동'), '숨긴 항목은 기록이 없으면 파레토에서 빠짐');
+});
+test('사이클타임 — 준비(세팅)는 기본 빼고, 설정을 켜면 넣음 · 완료 대수는 작업 시간 항목으로만 셈', () => {
+  const ms = L.mergeMeasures([], [TM('세팅', '07:50', '08:00'), TM('작업', '08:00', '08:40'), TM('세팅', '08:40', '08:46', '2')]).records;
+  const P = [{ name: '용접', workers: 2 }];
+  near(L.processStats(ms, P).rows[0].ct, 40); assert.equal(L.processStats(ms, P).rows[0].units, 1);   // 측정 인원 1명(갑)
+  near(L.processStats(ms, P, { ctSetup: true }).rows[0].ct, 40 + 16);
+  near(L.processStats(ms, P).rows[0].setupMin, 16);
+  const c = L.completions(ms)[0]; assert.equal(c.done, 1, '세팅만 한 2번 대는 완료 아님');
+  assert.equal(L.cleanSettings({}).ctSetup, false); assert.equal(L.cleanSettings({ ctSetup: true }).ctSetup, true);
+});
+test('일시정지 — 지금 구간을 닫고 일시정지 구간 · 다시 시작하면 멈춘 항목으로 · 시간이 흐르지 않음 · 사이클타임 · 손실에서 빠짐', () => {
+  const t0 = new Date(2026, 10, 10, 8, 0, 0).getTime(), min = 60000;
+  let r = L.swSwitch(null, '작업', t0, { worker: '갑', process: '용접', unit: '1' });
+  const segs = [];
+  r = L.swPause(r.state, t0 + 10 * min); segs.push(r.closed);
+  assert.equal(r.state.kind, L.PAUSE); assert.equal(r.state.resumeKind, '작업'); assert.equal(r.state.carrySec, 600);
+  assert.deepEqual(L.swElapsed(r.state, t0 + 15 * min), { sec: 600, pauseSec: 300 }, '일시정지 동안 작업 시간은 멈춰 있음');
+  assert.equal(L.swPause(r.state, t0 + 16 * min).closed, null, '두 번 눌러도 그대로');
+  r = L.swResume(r.state, t0 + 20 * min); segs.push(r.closed);
+  assert.equal(r.closed.kind, L.PAUSE); assert.equal(r.closed.sec, 600); assert.equal(r.state.kind, '작업');
+  assert.equal(L.swElapsed(r.state, t0 + 25 * min).sec, 900, '다시 시작하면 멈춘 곳(10분)부터 이어짐');
+  r = L.swNextUnit(r.state, t0 + 30 * min); segs.push(r.closed);
+  assert.equal(L.swElapsed(r.state, t0 + 31 * min).sec, 60, '다음 대는 0 부터');
+  const ms = L.mergeMeasures([], segs).records;
+  const st = L.processStats(ms, [{ name: '용접', workers: 1 }]).rows[0];
+  near(st.ct, 20); near(st.lossSec, 0); near(st.pauseSec, 600);
+  assert.equal(L.lossPareto(ms).totalMin, 0);
+  const tb = L.timeBreakdown(ms); assert.deepEqual(tb.rows.map((x) => [x.name, x.min]), [['일시정지', 10]]);
+  assert.equal(L.completions(ms)[0].done, 1);
+  assert.equal(L.swResume(null, t0).state, null); assert.equal(L.swPause(null, t0).state, null);
+});
+test('일시정지 — 새로 고쳐도(저장 · 복원) 일시정지 상태 · 멈춘 항목 · 흐른 시간이 이어짐', () => {
+  const t0 = new Date(2026, 10, 10, 8, 0, 0).getTime();
+  const kinds = L.cleanKinds(L.defaultKinds().concat([{ id: 'k9', name: '도장', cat: 'work' }]));
+  let r = L.swSwitch(null, 'k9', t0, { worker: '갑', process: '용접', unit: '1' });
+  r = L.swPause(r.state, t0 + 120000);
+  const db = L.restoreDb(JSON.parse(JSON.stringify({ kinds, running: r.state })));
+  assert.deepEqual([db.running.kind, db.running.resumeKind, db.running.carrySec], [L.PAUSE, 'k9', 120]);
+  assert.equal(L.swResume(db.running, t0 + 180000).state.kind, 'k9');
+  const bad = L.restoreDb({ running: { startMs: 5, process: '용접', kind: '일시정지', resumeKind: '없는 항목' } });
+  assert.equal(bad.running.resumeKind, '작업', '멈춘 항목을 모르면 작업으로');
+  assert.equal(L.restoreDb({ running: { startMs: 5, process: '용접', kind: '모름' } }).running, null);
+});
+test('옛 자료 — 항목 목록이 없으면 기본 항목, 옛 구분 이름은 그대로 짝지어짐, 목록에 없는 구분은 손실 항목으로 되살림', () => {
+  const db = L.restoreDb({ measures: [TM('작업', '08:00', '08:30'), TM('대기', '08:30', '08:40'), TM('설비 점검', '08:40', '08:50')] });
+  assert.equal(db.kinds.length, 9); assert.equal(db.measures.length, 3);
+  assert.deepEqual(db.kinds[8], { id: '설비 점검', name: '설비 점검', cat: 'loss', hidden: false });
+  near(L.lossPareto(db.measures, { kinds: db.kinds }).totalMin, 20);
+  const renamed = L.restoreDb({ kinds: KM((k) => { k.find((x) => x.id === '대기').name = '설비 대기'; }), measures: [TM('대기', '08:30', '08:40')] });
+  assert.equal(renamed.measures[0].kind, '대기'); assert.equal(L.kindName(renamed.kinds, renamed.measures[0].kind), '설비 대기');
+});
+test('가상 샘플 — 세팅 · 휴식 · 일시정지가 비작업으로 보이고 병목 · 손실 줄거리는 그대로', () => {
+  const db = sampleDb();
+  const tb = L.timeBreakdown(db.measures, { ...BEFORE, kinds: db.kinds });
+  assert.deepEqual(tb.rows.map((r) => r.name), ['세팅', '휴식', '일시정지']);
+  assert.ok(tb.nonworkShare > 0 && tb.nonworkShare < 0.3);
+  const st = L.processStats(db.measures, db.processes, BEFORE), st2 = L.processStats(db.measures, db.processes, { ...BEFORE, ctSetup: true });
+  const bw = (x) => x.rows.find((r) => r.name === '본용접');
+  near(bw(st).setupMin, 3 * bw(st).measuredWorkers, 0.01, '세팅 3분/사람/대');
+  near(bw(st2).ct - bw(st).ct, bw(st).setupMin / bw(st).workers, 1e-6, '세팅을 넣으면 사이클타임이 그만큼 늚');
+  assert.equal(L.lineAnalysis(st, L.taktInfo(db.daily, { ...BEFORE, settings: db.settings })).bottleneck.name, '본용접');
+  const prompt = L.buildAnalysisPrompt({ period: BEFORE, total: L.achieveTotal(db.daily, { ...BEFORE, settings: db.settings }), pareto: L.lossPareto(db.measures, BEFORE), nonwork: tb }).prompt;
+  assert.ok(prompt.includes('비작업 시간') && prompt.includes('세팅'));
+  const c = L.comparePeriods(db, BEFORE, AFTER, db.settings);
+  assert.ok(L.compareToAoa(c).some((r) => /비작업/.test(r[0])));
+});
 test('AI 연결 — 키가 없으면 인증 머리글 없음, 저장 칸 이름', () => {
   assert.equal(E.STORE_KEY, 'data10-08.ai');
   const req = E.buildChatRequest({ baseUrl: 'https://llm.example.com/v1/', model: 'm' }, E.promptMessages('안녕'));

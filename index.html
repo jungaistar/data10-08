@@ -3,8 +3,8 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>프레임 제작 생산성 개선 — 1단계</title>
-  <meta name="description" content="일일 실적으로 목표 대수 대비 달성률을 관리하고, 현장 측정으로 공정별 작업시간·손실을 재어 병목공정·인원 배분·개선 전후 단가 절감을 분석하며 표준작업서 초안을 만드는 브라우저 도구(1단계)">
+  <title>프레임 제작 생산성 개선 — v2.0</title>
+  <meta name="description" content="일일 실적으로 목표 대수 대비 달성률을 관리하고, 현장 측정으로 공정별 작업시간·손실을 재어 병목공정·인원 배분·개선 전후 단가 절감을 분석하며 표준작업서 초안을 만드는 브라우저 도구">
   <meta name="robots" content="noindex">
   <!-- fresh-guard v3 (2026-10-21) — 배포 직후에도 강력 새로고침 없이 새 화면을 보이게 한다.
        GitHub Pages 는 HTML 을 max-age=600 으로 준다. 브라우저도, GitHub 앞단 캐시(Fastly)도 그동안 옛 HTML 을 줄 수 있다
@@ -16,7 +16,11 @@
        v3: location.reload() 대신 질의 붙은 주소로 — reload 가 Fastly 에 남은 옛 판을 다시 받아 멈추던 것(10-21 build-data 강의안).
        탭 전환·포커스로는 옮기지 않는다(입력 유실). ETag 는 Cloudflare 가 지워서 쓸 수 없다. 원본: dreamit-1000/scripts/fresh-guard/guard.html -->
   <script>(function(){try{var L=location,P='_fg',h=window.history,q=L.search;if(/[?&]_fg=/.test(q)&&h&&h.replaceState){q=q.replace(/([?&])_fg=[^&]*&?/,'$1').replace(/[?&]$/,'');h.replaceState(h.state,'',L.pathname+q+L.hash);}var d=Date.parse(document.lastModified),u=L.pathname+L.search,k='__fresh_guard',t=0;if(!d||!window.fetch||!window.sessionStorage)return;var g=function(s,v){return s+(s.indexOf('?')<0?'?':'&')+P+'='+v;};var c=function(){var n=Date.now();if(n-t<15000)return;t=n;fetch(g(u,n),{method:'HEAD',cache:'no-store'}).then(function(r){var lm=r.headers.get('last-modified'),f=lm&&Date.parse(lm);if(!f||f<=d+1000)return;if(sessionStorage.getItem(k)===lm)return;sessionStorage.setItem(k,lm);L.replace(g(L.pathname+L.search,f)+L.hash);})['catch'](function(){});};c();var p=h&&h.pushState;if(p)h.pushState=function(){var x=p.apply(this,arguments);c();return x;};addEventListener('hashchange',c);addEventListener('popstate',c);}catch(e){}})();</script>
-  <link rel="stylesheet" href="css/style.css?v=2026-10-27.1">
+  <link rel="stylesheet" href="css/style.css?v=2026-11-10.2">
+  <!-- auth-kit: 로그인 전에는 도구 화면을 감춘다(js/auth.js 가 판정 뒤 푼다) -->
+  <script>document.documentElement.classList.add('auth-lock')</script>
+  <link rel="stylesheet" href="css/auth.css?v=2026-11-10.2">
+  <!-- /auth-kit -->
 </head>
 <body>
   <a class="skip" href="#main">본문으로 건너뛰기</a>
@@ -56,7 +60,7 @@
       <main id="main" class="inner main" tabindex="-1"></main>
 
       <footer class="site-footer">
-        <div class="inner">1단계 · 파일과 데이터는 서버로 보내지 않고 이 브라우저 안에서만 읽고 저장합니다 · AI 자동 보내기는 설정한 경우에만</div>
+        <div class="inner">v2.0 · 파일과 데이터는 서버로 보내지 않고 이 브라우저 안에서만 읽고 저장합니다 · AI 자동 보내기는 설정한 경우에만</div>
       </footer>
     </div>
   </div>
@@ -65,13 +69,18 @@
   <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
 
   <!-- 로컬 파일(file://)로 열어도 돌도록 module 이 아닌 일반 스크립트로 불러옵니다 -->
-  <script src="vendor/xlsx.full.min.js?v=2026-10-27.1"></script>
-  <script src="js/logic.js?v=2026-10-27.1"></script>
-  <script src="js/sample-data.js?v=2026-10-27.1"></script>
-  <script src="js/store.js?v=2026-10-27.1"></script>
-  <script src="js/charts.js?v=2026-10-27.1"></script>
-  <script src="js/ai-endpoint.js?v=2026-10-27.1"></script>
-  <script src="js/ai-panel.js?v=2026-10-27.1"></script>
-  <script src="js/app.js?v=2026-10-27.1"></script>
+  <script src="vendor/xlsx.full.min.js?v=2026-11-10.2"></script>
+  <script src="js/logic.js?v=2026-11-10.2"></script>
+  <script src="js/sample-data.js?v=2026-11-10.2"></script>
+  <script src="js/store.js?v=2026-11-10.2"></script>
+  <script src="js/charts.js?v=2026-11-10.2"></script>
+  <script src="js/ai-endpoint.js?v=2026-11-10.2"></script>
+  <script src="js/ai-panel.js?v=2026-11-10.2"></script>
+  <script src="js/app.js?v=2026-11-10.2"></script>
+  <!-- auth-kit: 로그인 · 사용 신청 · 승인(정본 data10-00/kit/auth) -->
+  <script src="vendor/supabase.js?v=2026-11-10.2"></script>
+  <script src="js/auth-config.js?v=2026-11-10.2"></script>
+  <script src="js/auth.js?v=2026-11-10.2"></script>
+  <!-- /auth-kit -->
 </body>
 </html>

@@ -340,6 +340,25 @@ table.list tr.bn td { background: #fff1e6; font-weight: 700; }
 .sw-grid .btn[aria-pressed="true"] { outline: 3px solid var(--primary-dark); outline-offset: -3px; }
 .btn-loss { background: #fff4e8; border-color: #f0c99a; }
 .btn-wait { background: #fdecea; border-color: #efb3ab; }
+.btn-rest { background: #eef4ff; border-color: #b9cdf0; }
+.btn-pause { background: #fff8db; border-color: #e6cf73; font-weight: 700; }
+.sw.paused { border-color: #d4a72c; background: #fffbea; }
+.sw-pause { font-size: 1rem; font-weight: 700; color: #8a6500; font-variant-numeric: tabular-nums; }
+.sw-pause:empty { display: none; }
+
+/* 공정 설정 — 측정 항목 편집 */
+.kind-list { display: grid; gap: 6px; margin: 10px 0; }
+.kind-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 10px; background: #fff; }
+.kind-row.is-hidden { background: #f4f5f7; }
+.kind-row .kr-move { display: flex; gap: 4px; flex: none; }
+.kind-row .kr-name { flex: 1 1 9rem; min-width: 0; }
+.kind-row .kr-name input { width: 100%; }
+.kind-row .kr-cat { flex: 1 1 9rem; min-width: 0; }
+.kind-row .kr-cat select { width: 100%; }
+.kind-row .kr-hide { display: inline-flex; align-items: center; gap: 4px; flex: none; }
+.kind-row .kr-count { flex: none; }
+.check-line { display: flex; align-items: flex-start; gap: 8px; margin: 10px 0; overflow-wrap: break-word; word-break: keep-all; }
+.check-line input { flex: none; margin-top: 4px; }
 .unit-row { display: flex; gap: 6px; }
 .unit-row input { flex: 1 1 auto; min-width: 0; }
 .unit-row .btn { flex: none; min-height: 44px; }

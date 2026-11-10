@@ -22,12 +22,34 @@
   'use strict';
   /* 판(版) — index.html 의 ?v= · app.js 의 APP_VERSION 과 같아야 합니다(scripts/bump-version.mjs 로 함께 올림).
      브라우저가 옛 logic.js 와 새 app.js 를 섞어 쓰면 app.js 가 이 값을 보고 계산을 멈춥니다. */
-  var VERSION = '2026-10-27.1';
+  var VERSION = '2026-11-10.2';
 
   var SCHEMA_VERSION = 1;
   var GOAL = 0.9; // 달성률 목표 90% (제출 원문)
-  var LOSS_TYPES = ['자재 준비', '이동', '대기', '재작업', '기타'];
-  var KINDS = ['작업'].concat(LOSS_TYPES);
+  var LOSS_TYPES = ['자재 준비', '이동', '대기', '재작업', '기타'];   // 기본 손실 항목(id) — 옛 판과 같은 이름
+  var DEFAULT_CAPA = 4; // 공정별 하루 CAPA(대/일) 기본값 — 공정 설정에서 공정마다 바꿉니다
+
+  /* 측정 항목(구간 종류) — 2026-11-10 v2.1. 사용자가 이름 바꾸기 · 더하기 · 순서 · 숨기기를 합니다.
+     기록에는 항목 id 를 남기고 계산은 「분류」로 합니다(이름이 바뀌어도 계산 유지).
+     기본 항목의 id 는 옛 판의 구분 이름과 같아서, 옛 기록(구분 = 이름)이 그대로 짝지어집니다.
+     분류: work 작업 시간(사이클타임) · setup 준비(세팅, 설정에 따라 사이클타임에 넣음) · loss 손실(파레토) · rest 비작업(휴식 등)
+     「일시정지」는 고정 항목(분류 pause) — 스톱워치 일시정지 동안의 시간으로, 사이클타임 · 손실에서 빠지고 비작업 시간 요약에 보입니다. */
+  var CATS = [
+    { id: 'work', label: '작업 시간', hint: '사이클타임에 들어갑니다' },
+    { id: 'setup', label: '준비(세팅)', hint: '설정에서 고른 대로 사이클타임에 넣거나 뺍니다' },
+    { id: 'loss', label: '손실', hint: '손실 분석 · 파레토에 들어갑니다' },
+    { id: 'rest', label: '비작업(휴식 등)', hint: '사이클타임 · 손실에서 빠집니다' }
+  ];
+  var CAT_IDS = CATS.map(function (c) { return c.id; });
+  var PAUSE = '일시정지';
+  var PAUSE_KIND = { id: PAUSE, name: '일시정지', cat: 'pause', hidden: false, fixed: true };
+  var DEFAULT_KINDS = [
+    { id: '작업', name: '작업', cat: 'work' }, { id: '세팅', name: '세팅', cat: 'setup' },
+    { id: '자재 준비', name: '자재 준비', cat: 'loss' }, { id: '이동', name: '이동', cat: 'loss' }, { id: '대기', name: '대기', cat: 'loss' },
+    { id: '재작업', name: '재작업', cat: 'loss' }, { id: '기타', name: '기타', cat: 'loss' },
+    { id: '휴식', name: '휴식', cat: 'rest' }
+  ];
+  var KINDS = DEFAULT_KINDS.map(function (k) { return k.id; });   // 기본 항목 id (옛 판과의 호환용)
 
   /* ── 1. 기본 도구 ───────────────────────────────────────────── */
   function norm(s) { return String(s == null ? '' : s).replace(/[\s()（）\[\]·.:_/\\-]/g, '').toLowerCase(); }
@@ -154,7 +176,8 @@
     { id: 'kind', label: '구분(작업·손실 유형)', req: true, aliases: ['구분', '작업구분', '손실유형', '유형', '작업손실', '내용구분'] },
     { id: 'start', label: '시작', req: true, aliases: ['시작', '시작시각', '시작시간', 'start'] },
     { id: 'end', label: '종료', req: true, aliases: ['종료', '종료시각', '종료시간', '끝', 'end'] },
-    { id: 'memo', label: '메모', req: false, aliases: ['메모', '비고', '사유', '내용', '특이사항'] }
+    { id: 'memo', label: '메모', req: false, aliases: ['메모', '비고', '사유', '내용', '특이사항'] },
+    { id: 'done', label: '대 완료', req: false, aliases: ['대완료', '완료', '완료여부', '완성', '완성여부'] }
   ];
   function fieldsOf(kind) { return kind === 'measure' ? MEASURE_FIELDS : DAILY_FIELDS; }
   function colName(i) { var s = ''; i++; while (i > 0) { var r = (i - 1) % 26; s = String.fromCharCode(65 + r) + s; i = Math.floor((i - 1) / 26); } return s; }
@@ -253,7 +276,11 @@
   function cleanDaily(r) {
     if (!r || !toISO(r.date)) return null;
     function n(v) { var x = toNum(v); return x == null || x !== x || x < 0 ? null : x; }
-    return { date: toISO(r.date), target: n(r.target), actual: n(r.actual), workers: n(r.workers), availHr: n(r.availHr), note: str(r.note) };
+    var out = { date: toISO(r.date), target: n(r.target), actual: n(r.actual), workers: n(r.workers), availHr: n(r.availHr), note: str(r.note) };
+    // 실제 대수의 출처 — 'measure' = 현장 측정에서 자동 반영, 없으면 손 입력. measureAck = 손 입력을 유지하기로 고른 측정값
+    if (r.actualSrc === 'measure' && out.actual != null) out.actualSrc = 'measure';
+    var ack = n(r.measureAck); if (ack != null) out.measureAck = ack;
+    return out;
   }
   /* 같은 일자는 새 값으로 바꿉니다 */
   function mergeDaily(existing, incoming) {
@@ -340,6 +367,7 @@
     return {
       id: str(p.id) || 'p' + (i + 1), seq: n(p.seq) != null ? n(p.seq) : i + 1, name: str(p.name) || '공정' + (i + 1),
       stdMin: n(p.stdMin), workers: w == null ? 1 : Math.max(0, Math.round(w)),
+      capa: n(p.capa) > 0 ? n(p.capa) : DEFAULT_CAPA,           // 하루 CAPA(대/일) — 옛 자료에 없으면 기본값
       points: str(p.points), quality: str(p.quality), safety: str(p.safety)
     };
   }
@@ -359,24 +387,95 @@
     '이동': ['이동', '운반', '보행'],
     '대기': ['대기', '기다림', '대기시간', '설비대기', '자재대기', '작업대기'],
     '재작업': ['재작업', '수정', '리워크', 'rework', '보수'],
-    '기타': ['기타', '그외', '그밖']
+    '기타': ['기타', '그외', '그밖'],
+    '세팅': ['세팅', '셋팅', '셋업', '세트업', 'setup', '제품세팅', '지그세팅', '준비세팅', '세팅준비'],
+    '휴식': ['휴식', '휴게', '쉬는시간', '휴식시간', 'break', 'rest'],
+    '일시정지': ['일시정지', '일시중지', '정지', 'pause']
   };
-  function normKind(v) {
+  function defaultKinds() { return DEFAULT_KINDS.map(function (k) { return { id: k.id, name: k.name, cat: k.cat, hidden: false }; }); }
+  /* 저장된 항목 목록 다듬기 — id · 이름 겹침 없애기, 분류 확인, 보이는 「작업 시간」 항목이 하나는 있게 */
+  function cleanKinds(list) {
+    if (!Array.isArray(list) || !list.length) return defaultKinds();
+    var out = [], ids = {}, names = {};
+    names[norm(PAUSE)] = 1; ids[PAUSE] = 1;
+    function uniqName(base) { var n = base, i = 2; while (!norm(n) || names[norm(n)]) n = base + ' ' + i++; return n; }
+    list.forEach(function (k) {
+      if (!k || typeof k !== 'object') return;
+      var id = str(k.id) || str(k.name);
+      if (!id || ids[id]) return;
+      var name = uniqName(str(k.name) || id);
+      ids[id] = 1; names[norm(name)] = 1;
+      out.push({ id: id, name: name, cat: CAT_IDS.indexOf(k.cat) >= 0 ? k.cat : 'loss', hidden: k.hidden === true });
+    });
+    if (!out.length) return defaultKinds();
+    if (!out.some(function (k) { return k.cat === 'work' && !k.hidden; })) {
+      var w = out.filter(function (k) { return k.cat === 'work'; })[0];
+      if (w) w.hidden = false;
+      else out.unshift({ id: ids['작업'] ? 'work-' + out.length : '작업', name: uniqName('작업'), cat: 'work', hidden: false });
+    }
+    return out;
+  }
+  function kindList(kinds) { return Array.isArray(kinds) && kinds.length ? kinds : DEFAULT_KINDS; }
+  /* 글자(엑셀 · 손 입력) → 항목 id. 지금 이름 → 별칭(기본 항목) → id 순서로, 그다음 앞부분이 같은 것. 못 찾으면 null */
+  function normKind(v, kinds) {
     var s = norm(v);
     if (!s) return null;
-    var hit = null;
-    KINDS.forEach(function (k) { if (!hit && KIND_ALIASES[k].indexOf(s) >= 0) hit = k; });
+    var list = kindList(kinds).concat([PAUSE_KIND]), hit = null;
+    list.forEach(function (k) { if (!hit && norm(k.name) === s) hit = k.id; });
+    list.forEach(function (k) { if (!hit && (KIND_ALIASES[k.id] || []).indexOf(s) >= 0) hit = k.id; });
+    list.forEach(function (k) { if (!hit && norm(k.id) === s) hit = k.id; });
     if (hit) return hit;
-    KINDS.forEach(function (k) { if (!hit && KIND_ALIASES[k].some(function (a) { return a.length >= 2 && s.indexOf(a) === 0; })) hit = k; });
+    list.forEach(function (k) {
+      if (hit) return;
+      var al = (KIND_ALIASES[k.id] || []).concat([norm(k.name)]);
+      if (al.some(function (a) { return a.length >= 2 && s.indexOf(a) === 0; })) hit = k.id;
+    });
     return hit;
   }
-  function isLoss(kind) { return LOSS_TYPES.indexOf(kind) >= 0; }
+  /* 저장된 값(id) → 항목. id 를 먼저 보고, 없으면 글자로 짝짓습니다(옛 기록 · 손으로 만든 값) */
+  function kindIndex(kinds) {
+    var list = kindList(kinds), byId = {}, memo = {};
+    list.forEach(function (k) { byId[k.id] = k; });
+    byId[PAUSE] = PAUSE_KIND;
+    function get(v) {
+      if (v == null || v === '') return null;
+      var s = String(v);
+      if (byId[s]) return byId[s];
+      if (!(s in memo)) { var id = normKind(s, list); memo[s] = id ? byId[id] : null; }
+      return memo[s];
+    }
+    return { list: list, get: get,
+      cat: function (v) { var k = get(v); return k ? k.cat : null; },
+      name: function (v) { var k = get(v); return k ? k.name : str(v); } };
+  }
+  function kindName(kinds, v) { return kindIndex(kinds).name(v); }
+  function kindCat(kinds, v) { return kindIndex(kinds).cat(v); }
+  function lossKinds(kinds) { return kindList(kinds).filter(function (k) { return k.cat === 'loss'; }); }
+  /* 스톱워치의 큰 「작업」 단추 · 「다음 대」가 여는 항목 — 보이는 첫 작업 시간 항목 */
+  function mainWorkKind(kinds) {
+    var l = kindList(kinds), w = l.filter(function (k) { return k.cat === 'work' && !k.hidden; })[0] || l.filter(function (k) { return k.cat === 'work'; })[0];
+    return w ? w.id : '작업';
+  }
+  function isLoss(kind, kinds) { return kindCat(kinds, kind) === 'loss'; }
   function measureKey(m) { return [m.date, m.worker, norm(m.process), m.unit, m.start].join('|'); }
-  function cleanMeasure(m) {
+  /* kinds — 측정 항목 목록(db.kinds). 기록의 구분은 항목 id 로 바꿔 저장합니다 */
+  function cleanMeasure(m, kinds) {
     if (!m) return null;
-    var date = toISO(m.date), kind = normKind(m.kind), s = toSec(m.start), e = toSec(m.end);
+    var k = kindIndex(kinds).get(m.kind);
+    var date = toISO(m.date), kind = k ? k.id : null, s = toSec(m.start), e = toSec(m.end);
     if (!date || !kind || s == null || e == null || !str(m.process)) return null;
-    return { date: date, worker: str(m.worker), process: str(m.process), unit: str(m.unit), kind: kind, start: secToHms(s), end: secToHms(e), sec: secDiff(s, e), memo: str(m.memo) };
+    var c = { date: date, worker: str(m.worker), process: str(m.process), unit: str(m.unit), kind: kind, start: secToHms(s), end: secToHms(e), sec: secDiff(s, e), memo: str(m.memo) };
+    var dn = toDone(m.done); if (dn != null) c.done = dn;
+    return c;
+  }
+  /* 「대 완료」 표시 — true(이 구간으로 그 대가 끝남) · false(아직 안 끝남, 스톱워치 기록) · null(표시 없음 — 옛 기록·종이 측정표) */
+  function toDone(v) {
+    if (v === true || v === false) return v;
+    var s = norm(v);
+    if (!s) return null;
+    if (['o', 'ㅇ', '○', '◯', 'y', 'yes', '1', 'true', '완료', '완성', '예', '끝', 'v', '√', '✓'].indexOf(s) >= 0) return true;
+    if (['x', '×', 'n', 'no', '0', 'false', '미완료', '아니오', '진행', '진행중'].indexOf(s) >= 0) return false;
+    return null;
   }
   function parseMeasure(aoa, opts) {
     opts = opts || {};
@@ -391,8 +490,8 @@
       var date = toISO(cell(row, 'date'), year) || lastDate; // 측정표는 일자를 첫 행에만 쓰는 일이 많아 위 행 일자를 이어 씁니다
       if (!date) { out.warnings.push({ row: rowNo, msg: '측정일을 읽지 못해 뺐습니다' }); out.skipped++; continue; }
       lastDate = date;
-      var kindRaw = cell(row, 'kind'), kind = normKind(kindRaw);
-      if (!kind) { out.warnings.push({ row: rowNo, msg: '구분 「' + str(kindRaw) + '」 을(를) 알 수 없어 뺐습니다(작업·자재 준비·이동·대기·재작업·기타)' }); out.skipped++; continue; }
+      var kindRaw = cell(row, 'kind'), kind = normKind(kindRaw, opts.kinds);
+      if (!kind) { out.warnings.push({ row: rowNo, msg: '구분 「' + str(kindRaw) + '」 을(를) 알 수 없어 뺐습니다(' + kindList(opts.kinds).filter(function (k) { return !k.hidden; }).map(function (k) { return k.name; }).concat([PAUSE_KIND.name]).join('·') + ' — 공정 설정의 「측정 항목」에 더할 수 있습니다)' }); out.skipped++; continue; }
       var s = toSec(cell(row, 'start')), e = toSec(cell(row, 'end'));
       if (s == null || e == null) { out.warnings.push({ row: rowNo, msg: '시작·종료 시각을 읽지 못해 뺐습니다' }); out.skipped++; continue; }
       var proc = str(cell(row, 'process'));
@@ -400,14 +499,16 @@
       var d = secDiff(s, e);
       if (d > 4 * 3600) out.warnings.push({ row: rowNo, msg: '한 구간이 4시간을 넘습니다(' + fmtDur(d) + ') — 시각을 확인해 주세요' });
       if (d === 0) out.warnings.push({ row: rowNo, msg: '시작과 종료가 같습니다(0초)' });
-      out.records.push({ date: date, worker: str(cell(row, 'worker')), process: proc, unit: str(cell(row, 'unit')), kind: kind, start: secToHms(s), end: secToHms(e), sec: d, memo: str(cell(row, 'memo')) });
+      var rec = { date: date, worker: str(cell(row, 'worker')), process: proc, unit: str(cell(row, 'unit')), kind: kind, start: secToHms(s), end: secToHms(e), sec: d, memo: str(cell(row, 'memo')) };
+      var dn = toDone(cell(row, 'done')); if (dn != null) rec.done = dn;
+      out.records.push(rec);
     }
     return out;
   }
-  function mergeMeasures(existing, incoming) {
+  function mergeMeasures(existing, incoming, kinds) {
     var by = {}, order = [], stat = { added: 0, updated: 0 };
     function put(m, count) {
-      var c = cleanMeasure(m); if (!c) return;
+      var c = cleanMeasure(m, kinds); if (!c) return;
       var k = measureKey(c);
       if (by[k]) { if (count) stat.updated++; } else { order.push(k); if (count) stat.added++; }
       by[k] = c;
@@ -422,10 +523,16 @@
   function measureDays(measures) { return uniq((measures || []).map(function (m) { return m.date; })).sort(); }
 
   /* 공정별 측정 통계 — 기간 안의 기록으로 대당 순작업 공수·손실을 냅니다.
-     대 수 = (일자 + 대 번호)가 다른 「작업」 구간의 수. 대 번호가 빈 작업 구간은 1건을 1대로 셉니다(경고).
-     측정 인원 = 그 공정에서 하루에 기록된 작업자 수의 평균(측정이 없으면 공정 마스터 인원). */
+     대 수 = (일자 + 대 번호)가 다른 「작업 시간」 구간의 수. 대 번호가 빈 작업 구간은 1건을 1대로 셉니다(경고).
+     측정 인원 = 그 공정에서 하루에 기록된 작업자 수의 평균(측정이 없으면 공정 마스터 인원).
+     opts.kinds — 측정 항목(분류로 계산), opts.ctSetup — 준비(세팅)를 사이클타임에 넣을지(기본 뺌).
+     사이클타임 = (작업 시간 분류 합 [+ 준비]) ÷ 대 수 ÷ 인원. 손실 · 비작업(휴식) · 일시정지는 빠집니다. */
   function processStats(measures, processes, opts) {
     opts = opts || {};
+    var KI = kindIndex(opts.kinds), LK = lossKinds(KI.list), ctSetup = opts.ctSetup === true;
+    function cat(m) { return KI.cat(m.kind); }
+    function inCt(m) { var c = cat(m); return c === 'work' || (ctSetup && c === 'setup'); }
+    function secOf(list, c) { return sum(list.filter(function (m) { return cat(m) === c; }), function (m) { return m.sec; }); }
     var procs = sortProcesses(processes);
     var list = (measures || []).filter(function (m) { return inRange(m.date, opts.from, opts.to); });
     var names = procs.map(function (p) { return p.name; });
@@ -436,7 +543,7 @@
       var mine = list.filter(function (m) { return norm(m.process) === norm(name); });
       var units = {}, perDayWorkers = {};
       mine.forEach(function (m, i) {
-        if (m.kind === '작업') {
+        if (cat(m) === 'work') {
           var u = m.unit ? m.date + '|' + m.unit : m.date + '|#' + m.worker + '|' + m.start;
           if (!m.unit) noUnit++;
           units[u] = 1;
@@ -444,20 +551,23 @@
         if (m.worker) (perDayWorkers[m.date] = perDayWorkers[m.date] || {})[m.worker] = 1;
       });
       var n = Object.keys(units).length;
-      var workSec = sum(mine.filter(function (m) { return m.kind === '작업'; }), function (m) { return m.sec; });
+      var workSec = sum(mine.filter(inCt), function (m) { return m.sec; });
       var loss = {};
-      LOSS_TYPES.forEach(function (t) { loss[t] = sum(mine.filter(function (m) { return m.kind === t; }), function (m) { return m.sec; }); });
-      var lossSec = sum(LOSS_TYPES, function (t) { return loss[t]; });
+      LK.forEach(function (k) { loss[k.id] = sum(mine.filter(function (m) { return KI.get(m.kind) === k; }), function (m) { return m.sec; }); });
+      var lossSec = secOf(mine, 'loss');
+      var setupSec = secOf(mine, 'setup'), restSec = secOf(mine, 'rest'), pauseSec = secOf(mine, 'pause');
       var dayKeys = Object.keys(perDayWorkers);
       var mWorkers = dayKeys.length ? sum(dayKeys, function (d) { return Object.keys(perDayWorkers[d]).length; }) / dayKeys.length : null;
       var workers = mWorkers != null ? mWorkers : (p ? p.workers : null);
       var workMin = n ? workSec / 60 / n : null;
       var lossPerUnit = {};
-      LOSS_TYPES.forEach(function (t) { lossPerUnit[t] = n ? loss[t] / 60 / n : null; });
+      LK.forEach(function (k) { lossPerUnit[k.id] = n ? loss[k.id] / 60 / n : null; });
       return {
         name: name, seq: p ? p.seq : 999, inMaster: !!p, masterWorkers: p ? p.workers : null, stdMin: p ? p.stdMin : null,
         stdCt: p && p.stdMin != null && p.workers > 0 ? p.stdMin / p.workers : null,
         units: n, rows: mine.length, workSec: workSec, lossSec: lossSec, loss: loss,
+        setupSec: setupSec, restSec: restSec, pauseSec: pauseSec, ctSetup: ctSetup,
+        setupMin: n ? setupSec / 60 / n : null,                    // 대당 준비(세팅) 공수(인·분)
         workMin: workMin,                                          // 대당 순작업 공수(인·분)
         lossMin: n ? lossSec / 60 / n : null,                      // 대당 손실(인·분)
         lossPerUnit: lossPerUnit,
@@ -466,7 +576,24 @@
         ctAll: workMin != null && workers > 0 ? (workMin + (n ? lossSec / 60 / n : 0)) / workers : null // 손실 포함(참고)
       };
     });
-    return { rows: rows, noUnit: noUnit, days: measureDays(list), count: list.length };
+    return { rows: rows, noUnit: noUnit, days: measureDays(list), count: list.length, ctSetup: ctSetup };
+  }
+  /* 시간 나눠 보기 — 분류별 합(초)과 비작업(준비 · 휴식 등 · 일시정지) 항목별 합.
+     opts: {from, to, process, kinds} → { cats:{work,setup,loss,rest,pause}, totalSec, nonworkSec, nonworkShare, rows:[{id,name,cat,sec,count}] } */
+  function timeBreakdown(measures, opts) {
+    opts = opts || {};
+    var KI = kindIndex(opts.kinds), cats = { work: 0, setup: 0, loss: 0, rest: 0, pause: 0 }, by = {};
+    (measures || []).forEach(function (m) {
+      if (!inRange(m.date, opts.from, opts.to) || (opts.process && norm(m.process) !== norm(opts.process))) return;
+      var k = KI.get(m.kind); if (!k) return;
+      cats[k.cat] = (cats[k.cat] || 0) + m.sec;
+      if (k.cat === 'setup' || k.cat === 'rest' || k.cat === 'pause') { var r = by[k.id] = by[k.id] || { id: k.id, name: k.name, cat: k.cat, sec: 0, count: 0 }; r.sec += m.sec; r.count++; }
+    });
+    var order = KI.list.map(function (k) { return k.id; }).concat([PAUSE]);
+    var rows = Object.keys(by).map(function (id) { return by[id]; }).sort(function (a, b) { return order.indexOf(a.id) - order.indexOf(b.id); });
+    rows.forEach(function (r) { r.min = r.sec / 60; });
+    var total = cats.work + cats.setup + cats.loss + cats.rest + cats.pause, nonwork = cats.setup + cats.rest + cats.pause;
+    return { cats: cats, totalSec: total, nonworkSec: nonwork, nonworkMin: nonwork / 60, nonworkShare: total ? nonwork / total : null, rows: rows };
   }
 
   /* 택트타임(분/대) — 기간의 일일 실적에서 Σ가용시간×60 ÷ Σ목표. 실적이 없으면 설정 기본값 */
@@ -509,12 +636,14 @@
   /* 손실 파레토 — 유형별 합(분) 큰 순, 누적 비율 */
   function lossPareto(measures, opts) {
     opts = opts || {};
-    var list = (measures || []).filter(function (m) { return isLoss(m.kind) && inRange(m.date, opts.from, opts.to) && (!opts.process || norm(m.process) === norm(opts.process)); });
+    var KI = kindIndex(opts.kinds), LK = lossKinds(KI.list);
+    var list = (measures || []).filter(function (m) { return KI.cat(m.kind) === 'loss' && inRange(m.date, opts.from, opts.to) && (!opts.process || norm(m.process) === norm(opts.process)); });
     var total = sum(list, function (m) { return m.sec; });
-    var rows = LOSS_TYPES.map(function (t) {
-      var mine = list.filter(function (m) { return m.kind === t; });
-      return { type: t, sec: sum(mine, function (m) { return m.sec; }), count: mine.length };
-    }).sort(function (a, b) { return b.sec - a.sec || LOSS_TYPES.indexOf(a.type) - LOSS_TYPES.indexOf(b.type); });
+    var rows = LK.map(function (k, i) {
+      var mine = list.filter(function (m) { return KI.get(m.kind) === k; });
+      return { id: k.id, type: k.name, sec: sum(mine, function (m) { return m.sec; }), count: mine.length, i: i, hidden: k.hidden === true };
+    }).filter(function (r) { return !r.hidden || r.sec > 0; })                 // 숨긴 항목은 기록이 있을 때만
+      .sort(function (a, b) { return b.sec - a.sec || a.i - b.i; });
     var cum = 0;
     rows.forEach(function (r) { r.min = r.sec / 60; r.share = total ? r.sec / total : null; cum += r.sec; r.cum = total ? cum / total : null; });
     return { rows: rows, totalSec: total, totalMin: total / 60, count: list.length };
@@ -522,6 +651,7 @@
   /* 손실 교차표 — by 'process' | 'worker' → [{key, loss:{유형: 분}, total, workMin, lossShare}] */
   function lossMatrix(measures, by, opts) {
     opts = opts || {};
+    var KI = kindIndex(opts.kinds), LK = lossKinds(KI.list);
     var list = (measures || []).filter(function (m) { return inRange(m.date, opts.from, opts.to); });
     var keys = uniq(list.map(function (m) { return by === 'worker' ? (m.worker || '(작업자 없음)') : m.process; }));
     if (by !== 'worker' && opts.processes) {
@@ -531,8 +661,9 @@
     return keys.map(function (k) {
       var mine = list.filter(function (m) { return (by === 'worker' ? (m.worker || '(작업자 없음)') : m.process) === k; });
       var loss = {};
-      LOSS_TYPES.forEach(function (t) { loss[t] = sum(mine.filter(function (m) { return m.kind === t; }), function (m) { return m.sec; }) / 60; });
-      var total = sum(LOSS_TYPES, function (t) { return loss[t]; }), work = sum(mine.filter(function (m) { return m.kind === '작업'; }), function (m) { return m.sec; }) / 60;
+      LK.forEach(function (k) { loss[k.id] = sum(mine.filter(function (m) { return KI.get(m.kind) === k; }), function (m) { return m.sec; }) / 60; });
+      var total = sum(mine.filter(function (m) { return KI.cat(m.kind) === 'loss'; }), function (m) { return m.sec; }) / 60,
+        work = sum(mine.filter(function (m) { return KI.cat(m.kind) === 'work'; }), function (m) { return m.sec; }) / 60;
       return { key: k, loss: loss, total: total, workMin: work, lossShare: total + work > 0 ? total / (total + work) : null };
     });
   }
@@ -578,17 +709,19 @@
   /* ── 9. 개선 전·후 비교 + 단가 절감 ─────────────────────────── */
   function periodFacts(db, p) {
     var tot = achieveTotal(db.daily, { from: p.from, to: p.to, settings: db.settings, goal: db.settings.goal });
-    var st = processStats(db.measures, db.processes, { from: p.from, to: p.to });
+    var ko = { from: p.from, to: p.to, kinds: db.kinds, ctSetup: !!(db.settings && db.settings.ctSetup) };
+    var st = processStats(db.measures, db.processes, ko);
     var tk = taktInfo(db.daily, { from: p.from, to: p.to, settings: db.settings });
     var la = lineAnalysis(st, tk);
-    var lp = lossPareto(db.measures, { from: p.from, to: p.to });
+    var lp = lossPareto(db.measures, ko);
     var measured = st.rows.filter(function (r) { return r.units > 0; });
     return {
       from: p.from, to: p.to, total: tot, line: la, pareto: lp, stats: st,
       // 측정 기반: 공정별 대당 값을 더한 「한 대에 드는 순작업·손실 공수」
       netWorkMin: measured.length ? sum(measured, function (r) { return r.workMin; }) : null,
       lossMin: measured.length ? sum(measured, function (r) { return r.lossMin; }) : null,
-      lossByType: LOSS_TYPES.reduce(function (o, t) { o[t] = measured.length ? sum(measured, function (r) { return r.lossPerUnit[t]; }) : null; return o; }, {})
+      lossByType: lossKinds(db.kinds).reduce(function (o, k) { o[k.id] = measured.length ? sum(measured, function (r) { return r.lossPerUnit[k.id]; }) : null; return o; }, {}),
+      nonwork: timeBreakdown(db.measures, ko)
     };
   }
   /* cost: { wage(원/시간), otherBefore(대당 기타 원가, 원), otherAfter, annualUnits(선택) } — 전부 사용자가 넣는 값 */
@@ -606,7 +739,7 @@
     var annual = saving != null && Number(cost.annualUnits) > 0 ? saving * Number(cost.annualUnits) : null;
     function d(x, y) { return x == null || y == null ? null : y - x; }
     return {
-      before: A, after: B, costBefore: cA, costAfter: cB, saving: saving, savingRate: saving != null && cA.total ? saving / cA.total : null, annual: annual,
+      lossKinds: lossKinds(db.kinds), before: A, after: B, costBefore: cA, costAfter: cB, saving: saving, savingRate: saving != null && cA.total ? saving / cA.total : null, annual: annual,
       delta: {
         rate: d(A.total.rate, B.total.rate), actualPerDay: d(A.total.days ? A.total.actual / A.total.days : null, B.total.days ? B.total.actual / B.total.days : null),
         perUnitManHr: d(A.total.perUnitManHr, B.total.perUnitManHr), lossMin: d(A.lossMin, B.lossMin), maxCt: d(A.line.maxCt, B.line.maxCt),
@@ -636,7 +769,8 @@
       ['병목 사이클타임(분/대)', v(A.line.maxCt, 1), v(B.line.maxCt, 1), v(c.delta.maxCt, 1)],
       ['측정 대당 순작업 공수(인·분)', v(A.netWorkMin, 1), v(B.netWorkMin, 1), v(A.netWorkMin != null && B.netWorkMin != null ? B.netWorkMin - A.netWorkMin : null, 1)],
       ['측정 대당 손실 공수(인·분)', v(A.lossMin, 1), v(B.lossMin, 1), v(c.delta.lossMin, 1)]];
-    LOSS_TYPES.forEach(function (t) { rows.push([' · ' + t + '(인·분/대)', v(A.lossByType[t], 1), v(B.lossByType[t], 1), v(A.lossByType[t] != null && B.lossByType[t] != null ? B.lossByType[t] - A.lossByType[t] : null, 1)]); });
+    (c.lossKinds || lossKinds()).forEach(function (k) { var t = k.id; if (k.hidden && !A.lossByType[t] && !B.lossByType[t]) return; rows.push([' · ' + k.name + '(인·분/대)', v(A.lossByType[t], 1), v(B.lossByType[t], 1), v(A.lossByType[t] != null && B.lossByType[t] != null ? B.lossByType[t] - A.lossByType[t] : null, 1)]); });
+    if (A.nonwork && B.nonwork) rows.push(['측정 비작업 시간 합(분, 세팅 · 휴식 · 일시정지)', v(A.nonwork.nonworkMin, 1), v(B.nonwork.nonworkMin, 1), v(B.nonwork.nonworkMin - A.nonwork.nonworkMin, 1)]);
     if (c.costBefore && c.costAfter) {
       rows.push(['대당 인건비(원)', Math.round(c.costBefore.labor), Math.round(c.costAfter.labor), Math.round(c.costAfter.labor - c.costBefore.labor)]);
       rows.push(['대당 기타 원가(원)', Math.round(c.costBefore.other), Math.round(c.costAfter.other), Math.round(c.costAfter.other - c.costBefore.other)]);
@@ -720,7 +854,11 @@
       L.push('- 손실시간(측정, 유형별 큰 순): ' + ctx.pareto.rows.filter(function (r) { return r.sec > 0; }).map(function (r) { return r.type + ' ' + fmtMin(r.min, 0) + '(' + fmtPct(r.share, 0) + ')'; }).join(', ') + ', 합계 ' + fmtMin(ctx.pareto.totalMin, 0));
     }
     if (ctx.byProcess && ctx.byProcess.length) {
-      L.push('- 공정별 손실(분): ' + ctx.byProcess.map(function (r) { return r.key + ' ' + LOSS_TYPES.filter(function (x) { return r.loss[x] > 0; }).map(function (x) { return x + ' ' + round(r.loss[x], 0); }).join('·'); }).join(' / '));
+      var LK = lossKinds(ctx.kinds);
+      L.push('- 공정별 손실(분): ' + ctx.byProcess.map(function (r) { return r.key + ' ' + LK.filter(function (k) { return r.loss[k.id] > 0; }).map(function (k) { return k.name + ' ' + round(r.loss[k.id], 0); }).join('·'); }).join(' / '));
+    }
+    if (ctx.nonwork && ctx.nonwork.nonworkSec > 0) {
+      L.push('- 비작업 시간(측정, 사이클타임 · 손실에서 뺀 시간): ' + ctx.nonwork.rows.map(function (r) { return r.name + ' ' + fmtMin(r.min, 0); }).join(', ') + ', 합계 ' + fmtMin(ctx.nonwork.nonworkMin, 0) + '(측정 시간의 ' + fmtPct(ctx.nonwork.nonworkShare, 0) + ')');
     }
     if (ctx.byWorker && ctx.byWorker.length) {
       L.push('- 작업자별 손실 비율(손실 ÷ (작업+손실)): ' + ctx.byWorker.map(function (r) { return W(r.key) + ' ' + fmtPct(r.lossShare, 0); }).join(', '));
@@ -742,7 +880,8 @@
     L.push('1. 현재 상태 한 줄 요약 (달성률과 병목을 숫자 그대로)');
     L.push('2. 병목공정과 손실의 관계 — 어느 공정의 어떤 손실이 생산량을 막는지 (기록된 원인 / 추정 구분)');
     L.push('3. 작업 순서·인원 배분 개선안 2~3개 (현재 인원 유지, 각 안마다 근거 숫자와 예상 효과)');
-    L.push('4. 손실 유형별 줄이는 방법 (자재 준비·이동·대기·재작업 가운데 큰 것부터, 표준화할 작업 방법 포함)');
+    var lossNames = ctx.pareto && ctx.pareto.rows ? ctx.pareto.rows.filter(function (r) { return r.sec > 0; }).map(function (r) { return r.type; }) : [];
+    L.push('4. 손실 유형별 줄이는 방법 (' + (lossNames.length ? lossNames.join('·') : '기록된 손실') + ' 가운데 큰 것부터, 표준화할 작업 방법 포함)' + (ctx.nonwork && ctx.nonwork.nonworkSec > 0 ? ' — 세팅 시간은 줄일 방법을 따로 적어줘' : ''));
     L.push('5. 현장에서 더 측정·확인할 것');
     L.push('품질·안전에 영향이 있을 수 있는 안에는 「품질·안전 확인 필요」라고 적어줘. 확실하지 않은 것은 「확인 필요」라고 적어줘.');
     var text = L.join('\n');
@@ -773,8 +912,121 @@
     return L.join('\n');
   }
 
+  /* ── 12b. 현장 측정 → 일일 실적 자동 반영 · 공정별 진행 현황 ──────────
+     완료 대수 = 그날 그 공정에서 끝난 대(일자 + 대 번호)의 수.
+       · 스톱워치 기록: 「다음 대」·「이 대 완료」로 닫힌 대만 셉니다(done = true). 아직 하던 대(done = false)는 빼고 셉니다.
+       · 표시가 없는 기록(옛 기록·종이 측정표·엑셀): 「작업」 구간이 있는 대를 끝난 것으로 셉니다.
+     라인 완성 대수 = 마지막 공정(공정 설정 순서의 끝)의 완료 대수 — 이 값이 그날 일일 실적의 「실제 대수」 후보가 됩니다. */
+  function completions(measures, opts) {
+    opts = opts || {};
+    var g = {}, KI = kindIndex(opts.kinds);
+    function isWork(m) { return KI.cat(m.kind) === 'work'; }
+    (measures || []).forEach(function (m) {
+      if (!inRange(m.date, opts.from, opts.to)) return;
+      var key = m.date + '|' + norm(m.process);
+      var grp = g[key] = g[key] || { date: m.date, process: m.process, units: {} };
+      var uk = m.unit ? 'u:' + m.unit : (isWork(m) ? 'w:' + m.worker + '|' + m.start : null);
+      if (!uk) return; // 대 번호 없는 손실 구간은 어느 대인지 알 수 없음
+      var u = grp.units[uk] = grp.units[uk] || { work: false, flag: null };
+      if (isWork(m)) u.work = true;
+      if (m.done === true) u.flag = true;
+      else if (m.done === false && u.flag !== true) u.flag = false;
+    });
+    return Object.keys(g).sort().map(function (k) {
+      var grp = g[k], done = 0, open = 0;
+      Object.keys(grp.units).forEach(function (uk) {
+        var u = grp.units[uk];
+        if (u.flag === true || (u.flag === null && u.work)) done++;
+        else if (u.flag === false) open++;
+      });
+      return { date: grp.date, process: grp.process, done: done, open: open };
+    });
+  }
+  function doneOf(comps, date, process) {
+    var n = norm(process);
+    return comps.filter(function (c) { return c.date === date && norm(c.process) === n; })[0] || null;
+  }
+  /* 공정 순서 — 공정 설정 순서, 설정에 없는 측정 공정은 뒤에 */
+  function processOrder(processes, measures) {
+    var procs = sortProcesses(processes), names = procs.map(function (p) { return p.name; });
+    (measures || []).forEach(function (m) { if (!processByName(procs, m.process) && names.indexOf(m.process) < 0) names.push(m.process); });
+    return names;
+  }
+  function lineProcess(processes, measures) {
+    var procs = sortProcesses(processes);
+    if (procs.length) return procs[procs.length - 1].name;
+    var names = processOrder([], measures);
+    return names.length ? names[names.length - 1] : null;
+  }
+  /* 날짜별 라인 완성 대수(마지막 공정 완료 수) — 마지막 공정 측정이 없는 날은 lineDone = null */
+  function measuredActuals(measures, processes, kinds) {
+    var comps = completions(measures, { kinds: kinds }), line = lineProcess(processes, measures);
+    return measureDays(measures).map(function (d) {
+      var c = line ? doneOf(comps, d, line) : null;
+      return { date: d, line: line, lineDone: c ? c.done : null, open: c ? c.open : 0 };
+    });
+  }
+  /* 측정값을 일일 실적에 반영 — 손으로 넣은 실제 대수는 덮어쓰지 않고 conflicts 로 돌려줍니다.
+     · 그날 일일 실적이 없으면 새로 만듭니다(목표 = 설정 기본값, 인원·가용시간은 비워 기본값 표시).
+     · 실제 대수가 비었거나 이미 「측정 반영」 이면 측정값으로 채웁니다.
+     · 손 입력과 다르면 그대로 두고 차이를 알립니다(사용자가 고름). 같은 측정값에 「입력값 유지」를 골랐으면 다시 묻지 않습니다. */
+  function syncMeasuredActual(daily, measures, processes, settings, kinds) {
+    var s = settings || {}, by = {}, stat = { added: 0, updated: 0 }, conflicts = [];
+    (daily || []).forEach(function (r) { var c = cleanDaily(r); if (c) by[c.date] = c; });
+    measuredActuals(measures, processes, kinds).forEach(function (m) {
+      if (m.lineDone == null || m.lineDone <= 0) return;
+      var r = by[m.date];
+      if (!r) {
+        by[m.date] = { date: m.date, target: s.target != null ? s.target : null, actual: m.lineDone, workers: null, availHr: null, note: '', actualSrc: 'measure' };
+        stat.added++;
+      } else if (r.actual == null || r.actualSrc === 'measure') {
+        if (r.actual !== m.lineDone || r.actualSrc !== 'measure') { r.actual = m.lineDone; r.actualSrc = 'measure'; delete r.measureAck; stat.updated++; }
+      } else if (r.actual !== m.lineDone && r.measureAck !== m.lineDone) {
+        conflicts.push({ date: m.date, manual: r.actual, measured: m.lineDone, line: m.line });
+      }
+    });
+    return { records: Object.keys(by).sort().map(function (k) { return by[k]; }), stat: stat, conflicts: conflicts };
+  }
+  /* 충돌 고르기 — 'measure' = 측정값으로 바꿈, 'manual' = 입력값 유지(이 측정값은 다시 묻지 않음) */
+  function resolveMeasured(daily, date, choice, measured) {
+    return (daily || []).map(function (r) {
+      if (r.date !== date) return r;
+      var c = cleanDaily(r);
+      if (choice === 'measure') { c.actual = measured; c.actualSrc = 'measure'; delete c.measureAck; }
+      else { delete c.actualSrc; c.measureAck = measured; }
+      return c;
+    });
+  }
+  /* 공정별 진행 현황 — 그날 공정마다 완료 수 vs CAPA, 사이클타임 vs 택트타임, 지연 판정 */
+  function processProgress(db, date) {
+    var procs = sortProcesses(db.processes), names = processOrder(procs, db.measures);
+    var comps = completions(db.measures, { from: date, to: date, kinds: db.kinds });
+    var st = processStats(db.measures, procs, { from: date, to: date, kinds: db.kinds, ctSetup: !!(db.settings && db.settings.ctSetup) });
+    var takt = taktInfo(db.daily, { from: date, to: date, settings: db.settings }).taktMin;
+    var line = lineProcess(procs, db.measures);
+    var rows = names.map(function (name) {
+      var p = processByName(procs, name), c = doneOf(comps, date, name);
+      var sr = st.rows.filter(function (r) { return norm(r.name) === norm(name); })[0];
+      var capa = p ? p.capa : DEFAULT_CAPA, done = c ? c.done : 0, measured = !!(sr && sr.rows);
+      var ct = sr ? sr.ct : null;
+      var short = measured && done < capa, slow = ct != null && takt != null && ct > takt + 1e-9;
+      return { name: name, seq: p ? p.seq : 999, capa: capa, done: done, open: c ? c.open : 0, measured: measured, rate: capa > 0 ? done / capa : null,
+        ct: ct, takt: takt, short: short, slow: slow, delayed: short || slow, isLine: name === line };
+    });
+    var lr = rows.filter(function (r) { return r.isLine; })[0];
+    return { date: date, takt: takt, rows: rows, line: line, lineDone: lr && lr.measured ? lr.done : null,
+      delayed: rows.filter(function (r) { return r.delayed; }) };
+  }
+  /* 날짜 × 공정 표(완료/CAPA) — 최근 측정일부터 limit 일 */
+  function progressMatrix(db, limit) {
+    var days = measureDays(db.measures).reverse().slice(0, limit || 14);
+    return { names: processOrder(db.processes, db.measures), days: days.map(function (d) { return processProgress(db, d); }) };
+  }
+
   /* ── 13. 스톱워치 (현장 측정 — 누를 때마다 앞 구간을 닫고 새 구간을 엽니다) ──────
-     state = null | { worker, process, unit, kind, startMs } */
+     state = null | { worker, process, unit, kind(항목 id), startMs, carrySec?, resumeKind? }
+     일시정지: 지금 구간을 닫고 「일시정지」 구간을 엽니다(resumeKind = 멈춘 항목, carrySec = 그 항목에서 이미 흐른 초 — 화면 표시용).
+     다시 시작: 일시정지 구간을 닫고 멈췄던 항목으로 새 구간을 엽니다. 상태는 저장소에 있어 새로 고쳐도 이어집니다. */
   function localDate(ms) { var d = new Date(ms); return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()); }
   function localHms(ms) { var d = new Date(ms); return pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds()); }
   function swClose(state, nowMs, memo) {
@@ -782,7 +1034,7 @@
     var sec = Math.max(0, Math.round((nowMs - state.startMs) / 1000));
     if (sec < 1) return null; // 실수로 두 번 누른 것
     return { date: localDate(state.startMs), worker: state.worker || '', process: state.process, unit: state.unit || '', kind: state.kind,
-      start: localHms(state.startMs), end: localHms(nowMs), sec: sec, memo: memo || '' };
+      start: localHms(state.startMs), end: localHms(nowMs), sec: sec, memo: memo || '', done: false };
   }
   /* 구분을 바꿈(작업 ↔ 손실 유형). ctx 가 있으면 작업자·공정·대 번호도 바꿉니다 */
   function swSwitch(state, kind, nowMs, ctx) {
@@ -792,11 +1044,41 @@
     return { closed: closed, state: { worker: ctx.worker != null ? ctx.worker : base.worker, process: ctx.process != null ? ctx.process : base.process,
       unit: ctx.unit != null ? ctx.unit : base.unit, kind: kind, startMs: nowMs } };
   }
-  function swStop(state, nowMs) { return { closed: swClose(state, nowMs), state: null }; }
-  /* 다음 대 — 지금 구간을 닫고 대 번호를 하나 올려 「작업」으로 시작 */
-  function swNextUnit(state, nowMs) {
+  function swPaused(state) { return !!state && state.kind === PAUSE; }
+  /* 일시정지 — 측정 중이 아니거나 이미 일시정지면 그대로 */
+  function swPause(state, nowMs) {
+    if (!state || swPaused(state)) return { closed: null, state: state || null };
+    var r = swSwitch(state, PAUSE, nowMs);
+    r.state.resumeKind = state.kind;
+    r.state.carrySec = (state.carrySec || 0) + (r.closed ? r.closed.sec : Math.max(0, Math.round((nowMs - state.startMs) / 1000)));
+    return r;
+  }
+  /* 다시 시작 — 멈췄던 항목(없으면 workKind)으로 이어 갑니다. 일시정지가 아니면 그대로 */
+  function swResume(state, nowMs, workKind) {
+    if (!swPaused(state)) return { closed: null, state: state || null };
+    var r = swSwitch(state, state.resumeKind || workKind || '작업', nowMs);
+    if (state.carrySec) r.state.carrySec = state.carrySec;
+    return r;
+  }
+  /* 화면에 보일 시간(초) — 일시정지 중이면 멈춘 항목의 흐른 시간(멈춰 있음)과 일시정지 시간 */
+  function swElapsed(state, nowMs) {
+    if (!state) return { sec: 0, pauseSec: 0 };
+    var here = Math.max(0, (nowMs - state.startMs) / 1000);
+    if (swPaused(state)) return { sec: state.carrySec || 0, pauseSec: here };
+    return { sec: (state.carrySec || 0) + here, pauseSec: 0 };
+  }
+  /* 멈춤 — opts.done 이면 「이 대 완료」로 닫습니다(그날 마지막 대) */
+  function swStop(state, nowMs, opts) {
+    var closed = swClose(state, nowMs);
+    if (closed && opts && opts.done) closed.done = true;
+    return { closed: closed, state: null };
+  }
+  /* 다음 대 — 지금 구간을 「이 대 완료」로 닫고 대 번호를 하나 올려 「작업」으로 시작 */
+  function swNextUnit(state, nowMs, workKind) {
     if (!state) return { closed: null, state: null };
-    return swSwitch(state, '작업', nowMs, { unit: nextUnit(state.unit) });
+    var r = swSwitch(state, workKind || '작업', nowMs, { unit: nextUnit(state.unit) });
+    if (r.closed) r.closed.done = true;
+    return r;
   }
   function nextUnit(u) {
     u = str(u);
@@ -810,7 +1092,7 @@
 
   /* ── 14. 저장 형식 ─────────────────────────────────────────── */
   function defaultSettings() {
-    return { goal: GOAL, availHr: 7.5, target: 10, workers: 9, product: '프레임', wage: null, otherBefore: null, otherAfter: null, annualUnits: null };
+    return { goal: GOAL, availHr: 7.5, target: 10, workers: 9, product: '프레임', wage: null, otherBefore: null, otherAfter: null, annualUnits: null, ctSetup: false };
   }
   function cleanSettings(s) {
     var d = defaultSettings();
@@ -819,11 +1101,12 @@
     var g = n(s.goal, 0.1, 1.5); if (g != null) d.goal = g;
     d.availHr = n(s.availHr, 0, 24); d.target = n(s.target, 0, 100000); d.workers = n(s.workers, 0, 10000);
     d.product = str(s.product) || '프레임';
+    d.ctSetup = s.ctSetup === true;   // 사이클타임에 준비(세팅) 넣기 — 기본 뺌
     d.wage = n(s.wage, 0, 1e9); d.otherBefore = n(s.otherBefore, 0, 1e12); d.otherAfter = n(s.otherAfter, 0, 1e12); d.annualUnits = n(s.annualUnits, 0, 1e9);
     return d;
   }
   function emptyDb() {
-    return { schemaVersion: SCHEMA_VERSION, daily: [], processes: [], measures: [], files: [], settings: defaultSettings(),
+    return { schemaVersion: SCHEMA_VERSION, daily: [], processes: [], kinds: defaultKinds(), measures: [], files: [], settings: defaultSettings(),
       compare: { beforeFrom: '', beforeTo: '', afterFrom: '', afterTo: '' }, sim: {}, aiNotes: { analysis: '', sop: '' }, aliases: {}, maskWorkers: true, includeCost: false, running: null, sample: false };
   }
   function restoreDb(o) {
@@ -831,7 +1114,17 @@
     if (!o || typeof o !== 'object') return db;
     if (Array.isArray(o.daily)) db.daily = mergeDaily([], o.daily).records;
     if (Array.isArray(o.processes)) db.processes = sortProcesses(o.processes);
-    if (Array.isArray(o.measures)) db.measures = mergeMeasures([], o.measures).records;
+    db.kinds = cleanKinds(o.kinds);   // 옛 자료(항목 목록 없음)는 기본 항목 — 옛 기록의 구분 이름이 기본 항목 id 와 같아 그대로 짝지어짐
+    if (Array.isArray(o.measures)) {
+      // 항목 목록에 없는 구분이 기록에 있으면(다른 PC 의 백업 등) 지우지 않고 「손실」 항목으로 되살립니다
+      var KI = kindIndex(db.kinds), extra = [];
+      o.measures.forEach(function (m) {
+        if (!m || KI.get(m.kind) || !str(m.kind) || !toISO(m.date) || !str(m.process) || toSec(m.start) == null || toSec(m.end) == null) return;
+        if (extra.indexOf(str(m.kind)) < 0) extra.push(str(m.kind));
+      });
+      if (extra.length) db.kinds = cleanKinds(db.kinds.concat(extra.map(function (k) { return { id: k, name: k, cat: 'loss' }; })));
+      db.measures = mergeMeasures([], o.measures, db.kinds).records;
+    }
     if (Array.isArray(o.files)) db.files = o.files.filter(function (f) { return f && f.name; });
     db.settings = cleanSettings(o.settings);
     if (o.compare && typeof o.compare === 'object') ['beforeFrom', 'beforeTo', 'afterFrom', 'afterTo'].forEach(function (k) { db.compare[k] = toISO(o.compare[k]) || ''; });
@@ -840,14 +1133,22 @@
     if (o.aliases && typeof o.aliases === 'object') db.aliases = assignAliases(o.aliases, []);
     if (o.maskWorkers === false) db.maskWorkers = false;
     db.includeCost = o.includeCost === true;
-    if (o.running && typeof o.running === 'object' && o.running.startMs > 0 && o.running.process && KINDS.indexOf(o.running.kind) >= 0) db.running = o.running;
+    if (o.running && typeof o.running === 'object' && o.running.startMs > 0 && o.running.process) {
+      var rk = kindIndex(db.kinds).get(o.running.kind);
+      if (rk) {
+        db.running = { worker: str(o.running.worker), process: str(o.running.process), unit: str(o.running.unit), kind: rk.id, startMs: Number(o.running.startMs) };
+        var cs = toNum(o.running.carrySec); if (cs > 0) db.running.carrySec = cs;
+        if (rk.id === PAUSE) { var rs = kindIndex(db.kinds).get(o.running.resumeKind); db.running.resumeKind = rs && rs.id !== PAUSE ? rs.id : mainWorkKind(db.kinds); }
+      }
+    }
     db.sample = o.sample === true;
     return db;
   }
 
   return {
     VERSION: VERSION,
-    SCHEMA_VERSION: SCHEMA_VERSION, GOAL: GOAL, LOSS_TYPES: LOSS_TYPES, KINDS: KINDS, DAILY_FIELDS: DAILY_FIELDS, MEASURE_FIELDS: MEASURE_FIELDS, ALIAS_PREFIX: ALIAS_PREFIX,
+    SCHEMA_VERSION: SCHEMA_VERSION, GOAL: GOAL, LOSS_TYPES: LOSS_TYPES, KINDS: KINDS, CATS: CATS, PAUSE: PAUSE,
+    defaultKinds: defaultKinds, cleanKinds: cleanKinds, kindIndex: kindIndex, kindName: kindName, kindCat: kindCat, lossKinds: lossKinds, mainWorkKind: mainWorkKind, timeBreakdown: timeBreakdown, DAILY_FIELDS: DAILY_FIELDS, MEASURE_FIELDS: MEASURE_FIELDS, ALIAS_PREFIX: ALIAS_PREFIX,
     norm: norm, str: str, round: round, sum: sum, toNum: toNum, toISO: toISO, addDays: addDays, weekStart: weekStart, weekEnd: weekEnd, monthKey: monthKey,
     dayLabel: dayLabel, weekLabel: weekLabel, monthLabel: monthLabel, toSec: toSec, secToHms: secToHms, durSec: durSec, fmtDur: fmtDur,
     fmtN: fmtN, fmtPct: fmtPct, fmtWon: fmtWon, fmtMin: fmtMin, colName: colName, fieldsOf: fieldsOf, fieldLabel: fieldLabel,
@@ -859,7 +1160,9 @@
     simulate: simulate, suggestAllocation: suggestAllocation, periodFacts: periodFacts, comparePeriods: comparePeriods, compareToAoa: compareToAoa, costOf: costOf,
     sopRows: sopRows, assignAliases: assignAliases, maskText: maskText, unmaskText: unmaskText, findLeaks: findLeaks,
     buildAnalysisPrompt: buildAnalysisPrompt, buildSopPrompt: buildSopPrompt,
-    swSwitch: swSwitch, swStop: swStop, swNextUnit: swNextUnit, nextUnit: nextUnit, localDate: localDate, localHms: localHms,
+    DEFAULT_CAPA: DEFAULT_CAPA, toDone: toDone, completions: completions, processOrder: processOrder, lineProcess: lineProcess, measuredActuals: measuredActuals,
+    syncMeasuredActual: syncMeasuredActual, resolveMeasured: resolveMeasured, processProgress: processProgress, progressMatrix: progressMatrix,
+    swSwitch: swSwitch, swStop: swStop, swNextUnit: swNextUnit, swPause: swPause, swResume: swResume, swPaused: swPaused, swElapsed: swElapsed, nextUnit: nextUnit, localDate: localDate, localHms: localHms,
     defaultSettings: defaultSettings, cleanSettings: cleanSettings, emptyDb: emptyDb, restoreDb: restoreDb
   };
 });
