@@ -633,3 +633,27 @@ test('판 맞추기 — index.html ?v= · logic.js · app.js 가 같은 판 (scr
 });
 
 console.log(`\n${passed}개 통과` + (process.exitCode ? ' — 실패가 있습니다' : ''));
+
+test('11-11 대(제품)별 총 사이클타임 — 작업 시간만 더하고 손실 · 휴식 · 일시정지는 그 밖, 공정 순서 · 완료 · 정렬', () => {
+  const kinds = L.defaultKinds(), work = L.mainWorkKind(kinds);
+  const loss = kinds.find(k => k.cat === 'loss').id, rest = kinds.find(k => k.cat === 'rest').id, setup = (kinds.find(k => k.cat === 'setup') || {}).id;
+  const M = (date, unit, process, kind, sec, done, start, end) => ({ date, worker: 'A', process, unit, kind, sec, start, end, memo: '', done });
+  const ms = [
+    M('2026-11-10', '1', '용접', work, 600, undefined, '09:00:00', '09:10:00'), M('2026-11-10', '1', '용접', loss, 120, undefined, '09:10:00', '09:12:00'),
+    M('2026-11-10', '1', '용접', L.PAUSE, 60, undefined, '09:12:00', '09:13:00'), M('2026-11-10', '1', '용접', work, 300, true, '09:13:00', '09:18:00'),
+    M('2026-11-10', '1', '사상', work, 200, true, '09:20:00', '09:23:20'), M('2026-11-10', '1', '사상', rest, 90, undefined, '09:23:20', '09:24:50'),
+    M('2026-11-10', '2', '용접', work, 500, false, '10:00:00', '10:08:20'),
+    M('2026-11-11', '10', '용접', work, 100, true, '08:00:00', '08:01:40'), M('2026-11-11', '9', '용접', work, 50, true, '07:00:00', '07:00:50')
+  ];
+  if (setup) ms.push(M('2026-11-10', '2', '용접', setup, 40, undefined, '09:59:00', '09:59:40'));
+  const procs = [{ name: '사상', seq: 2 }, { name: '용접', seq: 1 }];
+  const r = L.unitTotals(ms, kinds, { processes: procs });
+  assert.deepEqual(r.map(x => x.date + '#' + x.unit), ['2026-11-11#10', '2026-11-11#9', '2026-11-10#2', '2026-11-10#1']);   // 최근 날 · 큰 대 번호가 위(문자 정렬이면 9 가 10 위)
+  const u1 = r[3];
+  assert.equal(u1.ctSec, 1100); assert.equal(u1.otherSec, 270); assert.equal(u1.spanSec, 1370);
+  assert.deepEqual(u1.byProcess.map(p => p.name + ':' + p.ctSec), ['용접:900', '사상:200']);   // 공정 순서(seq)
+  assert.equal(u1.done, true); assert.equal(u1.start, '09:00:00'); assert.equal(u1.end, '09:24:50');
+  const u2 = r[2]; assert.equal(u2.done, false); assert.equal(u2.ctSec, 500); if (setup) assert.equal(u2.otherSec, 40);
+  if (setup) assert.equal(L.unitTotals(ms, kinds, { ctSetup: true })[2].ctSec, 540);   // 설정을 켜면 세팅도 사이클타임에
+  assert.deepEqual(L.unitTotals([], kinds), []);
+});

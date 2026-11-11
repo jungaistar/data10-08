@@ -413,3 +413,16 @@ table.list.sop td.num, table.list.sop td:first-child { min-width: 0; }
   body.print-sheet #printSheet { display: block !important; }
   @page { margin: 12mm; }
 }
+
+/* 11-11: 스톱워치 세 단추 · 대별 총 사이클타임 */
+.sw-grid.sw-three { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.sw-grid.sw-three .btn { min-height: 64px; font-size: 18px; font-weight: 800; }
+.btn-end { background: #b3261e; border-color: #b3261e; color: #fff; }
+.btn-end:hover:not(:disabled) { background: #8f1d17; }
+.btn-end:disabled { background: #e6b9b6; border-color: #e6b9b6; color: #fff; }
+.sw-hint { margin: 10px 0 0; }
+.sw-more, .note-more, .meas-detail { margin-top: 12px; }
+.sw-more > summary, .note-more > summary, .meas-detail > summary { cursor: pointer; font-weight: 700; padding: 8px 0; min-height: 40px; }
+.unit-total { margin: 4px 0 14px; }
+.unit-total h3 { margin: 0 0 4px; }
+.ct-big { font-size: 1.12em; font-variant-numeric: tabular-nums; }

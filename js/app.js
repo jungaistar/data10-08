@@ -5,7 +5,7 @@
   var L = window.FrameLogic, S = window.FrameStore, C = window.FrameCharts, AIP = window.AIPanel;
   /* 판 맞추기 — 브라우저가 옛 logic.js 와 새 app.js 를 섞어 쓰면(Pages 캐시) 버튼과 결과가 어긋날 수 있어, 섞였으면 계산하지 않고 새로고침을 안내합니다.
      판은 scripts/bump-version.mjs 로 index.html(?v=) · logic.js 와 함께 올립니다. */
-  var APP_VERSION = '2026-11-11.4';
+  var APP_VERSION = '2026-11-11.6';
   if (!L || L.VERSION !== APP_VERSION) {
     var m0 = document.getElementById('main') || document.body;
     m0.innerHTML = '<section class="card" id="versionMismatch"><h1>새 판이 나왔습니다 — 새로고침(Ctrl+F5)해 주세요</h1><p class="alert warn">이 브라우저가 옛 파일과 새 파일을 섞어 불러왔습니다(js/logic.js ' +
@@ -693,7 +693,14 @@
   }
   function pressStop(done) {
     var r = L.swStop(db.running, Date.now(), { done: done === true });
-    keepClosed(r.closed); db.running = null; save(); render();
+    keepClosed(r.closed); db.running = null;
+    if (done === true) ui.sw.unit = L.nextUnit(ui.sw.unit);   // 종료하면 다음 대 번호를 미리 올려 둔다(바로 「시작」)
+    save(); render();
+  }
+  /* 「시작」 — 측정 전이면 작업 시작, 일시정지 중이면 이어서. 작업 중에 다시 눌러도 구간을 나누지 않는다(11-11 요청) */
+  function pressStart() {
+    if (!db.running) return pressKind(L.mainWorkKind(db.kinds));
+    if (L.swPaused(db.running)) return pressPause();
   }
   function keepClosed(seg) {
     if (!seg) return;
@@ -738,20 +745,23 @@
         h('div', { class: 'sw-status', 'aria-live': 'polite' },
           h('span', { class: 'sw-kind' }, !run ? '측정 전 — 아래 단추로 시작' : paused ? '일시정지 중 — ' + kName(run.resumeKind) + ' 멈춤' : kName(run.kind) + ' 중'), timeEl, pauseEl,
           run ? h('span', { class: 'sw-ctx' }, (run.worker || '(작업자 없음)') + ' · ' + run.process + ' · ' + (run.unit || '-') + '번 대 · ' + L.localHms(run.startMs) + ' 부터' + (paused ? ' 일시정지' : '')) : null),
-        h('div', { class: 'sw-grid' },
-          h('button', { type: 'button', class: 'btn btn-primary wide', 'aria-pressed': run && run.kind === work ? 'true' : 'false', onclick: function () { pressKind(work); } }, run && run.kind === work ? kName(work) + ' 중 (다시 누르면 새 구간)' : kName(work) + ' 시작'),
-          h('button', { type: 'button', class: 'btn wide ' + (paused ? 'btn-primary' : 'btn-pause'), disabled: !run, 'aria-pressed': paused ? 'true' : 'false', onclick: pressPause },
-            paused ? '다시 시작 (' + kName(run.resumeKind) + ' 이어서)' : '일시정지'),
+        h('div', { class: 'sw-grid sw-three' },
+          h('button', { type: 'button', class: 'btn btn-primary', id: 'swStart', disabled: !!run && !paused, onclick: pressStart }, !run ? '시작' : paused ? '다시 시작' : '측정 중'),
+          h('button', { type: 'button', class: 'btn btn-pause', id: 'swPauseBtn', disabled: !run || paused, onclick: pressPause }, '일시정지'),
+          h('button', { type: 'button', class: 'btn btn-end', id: 'swEnd', disabled: !run, onclick: function () { pressStop(true); } }, '종료')),
+        h('p', { class: 'note sw-hint' }, '「시작」으로 재기 시작, 잠깐 멈출 때 「일시정지」(다시 이으려면 「다시 시작」), 한 대가 끝나면 「종료」. 종료하면 그 대가 완료로 기록되고 대 번호가 하나 올라갑니다.'),
+        h('details', { class: 'sw-more' }, h('summary', null, '세팅 · 손실 · 휴식을 나눠 재기 (자세히)'),
+          h('div', { class: 'sw-grid', style: 'margin-top:10px' },
+          run && !paused && run.kind !== work ? h('button', { type: 'button', class: 'btn btn-primary wide', onclick: function () { pressKind(work); } }, kName(work) + '(으)로 돌아가기') : null,
           others.map(kbtn),
-          h('button', { type: 'button', class: 'btn', disabled: !run, onclick: pressNext }, '다음 대'),
-          h('button', { type: 'button', class: 'btn', disabled: !run, onclick: function () { pressStop(true); } }, '완료하고 멈춤'),
-          h('button', { type: 'button', class: 'btn btn-danger', disabled: !run, onclick: function () { pressStop(false); } }, '멈춤(미완료)'))),
-      h('ul', { class: 'note' },
+          h('button', { type: 'button', class: 'btn', disabled: !run, onclick: pressNext }, '다음 대(멈추지 않고 이어서)'),
+          h('button', { type: 'button', class: 'btn btn-danger', disabled: !run, onclick: function () { pressStop(false); } }, '멈춤(미완료)')))),
+      h('details', { class: 'note-more' }, h('summary', null, '자세한 쓰는 법'), h('ul', { class: 'note' },
         h('li', null, '단추를 누를 때마다 앞 구간을 닫고 새 구간을 엽니다. 작업 중에 자재를 찾으러 가면 「자재 준비」, 돌아와 다시 일하면 「' + kName(work) + '」을 누릅니다. 제품을 맞추는 시간은 「세팅」, 쉬는 시간은 「휴식」입니다(항목은 공정 설정에서 바꿉니다).'),
         h('li', null, '「일시정지」를 누르면 지금 구간 시간이 멈추고, 멈춘 시간은 「일시정지」로 따로 남습니다(사이클타임 · 손실에서 빠지고 비작업 시간에 보임). 「다시 시작」을 누르면 멈췄던 항목으로 이어 잽니다. 새로 고쳐도 일시정지 상태가 이어집니다.'),
-        h('li', null, '「다음 대」는 지금 대를 완료로 닫고 대 번호를 하나 올려 작업으로 시작합니다. 그날 마지막 대는 「완료하고 멈춤」으로 끝냅니다. 화면을 닫거나 새로 고쳐도 측정 중인 구간은 이어집니다.'),
+        h('li', null, '「다음 대」는 지금 대를 완료로 닫고 대 번호를 하나 올려 작업으로 시작합니다. 한 대씩 끊어 잴 때는 「종료」로 끝냅니다. 화면을 닫거나 새로 고쳐도 측정 중인 구간은 이어집니다.'),
         h('li', null, '완료한 대수는 날짜 × 공정별로 세어 아래 「공정별 진행 현황」에 CAPA 와 함께 보이고, 마지막 공정 완료 수는 그날 일일 실적의 실제 대수에 자동으로 들어갑니다(손으로 넣은 값은 덮어쓰지 않음).'),
-        h('li', null, '한 휴대폰으로 한 사람을 잽니다. 여러 사람을 같이 잴 때는 사람마다 휴대폰을 쓰거나 종이 측정표를 씁니다.')),
+        h('li', null, '한 휴대폰으로 한 사람을 잽니다. 여러 사람을 같이 잴 때는 사람마다 휴대폰을 쓰거나 종이 측정표를 씁니다.'))),
       recent.length ? h('div', null, h('h3', null, '오늘 방금 기록한 구간'), h('ul', { class: 'recent' }, recent.map(function (m) {
         var memo = inp({ value: m.memo, placeholder: '메모(예: 브래킷 찾기)', 'aria-label': '메모' });
         memo.addEventListener('change', function () { m.memo = memo.value.trim(); save(); toast('메모를 저장했습니다.'); });
@@ -798,6 +808,22 @@
     window.print();
     setTimeout(done, 1500);
   }
+  /* 대(제품)별 총 사이클타임 — 측정 기록 맨 위에서 한눈에(11-11 요청). 상세 구간은 아래에 접어 둔다 */
+  function unitCard(list) {
+    var rows = L.unitTotals(list, db.kinds, { ctSetup: !!db.settings.ctSetup, processes: db.processes });
+    if (!rows.length) return null;
+    var shown = rows.slice(0, 200), done = rows.filter(function (r) { return r.done && r.ctSec; });
+    var avg = done.length ? L.sum(done.map(function (r) { return r.ctSec; })) / done.length : null;
+    return h('div', { class: 'unit-total', id: 'unitTotals' },
+      h('h3', null, '대(제품)별 총 사이클타임'),
+      h('p', { class: 'note' }, '한 대에 든 작업 시간을 모두 더한 값입니다(손실 · 휴식 · 일시정지는 「그 밖」에 따로).' + (avg != null ? ' 완료한 ' + done.length + '대 평균 ' + L.fmtDur(Math.round(avg)) + '.' : '')),
+      table(['측정일', '대', '총 사이클타임', '공정별', '그 밖(손실 · 휴식 · 일시정지)', '시작~종료', '상태'], shown.map(function (r) {
+        return { cells: [r.date.slice(5), r.unit || '-', h('strong', { class: 'ct-big' }, L.fmtDur(r.ctSec)),
+          r.byProcess.map(function (p) { return shortName(p.name) + ' ' + L.fmtDur(p.ctSec); }).join(' · '),
+          r.otherSec ? L.fmtDur(r.otherSec) : '-', (r.start || '') + '~' + (r.end || ''), h('span', { class: 'badge ' + (r.done ? 'ok' : 'muted') }, r.done ? '완료' : '진행 중')] };
+      }), { num: [0, 0, 1, 0, 1, 0, 0] }),
+      rows.length > shown.length ? h('p', { class: 'note' }, '최근 ' + shown.length + '대만 보입니다.') : null);
+  }
   function pageMeasure() {
     var days = L.measureDays(db.measures);
     if (ui.measDay && days.indexOf(ui.measDay) < 0) ui.measDay = '';
@@ -832,11 +858,13 @@
               if (!confirm(ui.measDay + ' 측정 기록 ' + list.length + '행을 지울까요?')) return;
               db.measures = db.measures.filter(function (m) { return m.date !== ui.measDay; }); ui.measDay = ''; syncFromMeasures(); save(); render();
             } }, '이 날 기록 지우기') : null)),
-        list.length ? table(['측정일', '작업자', '공정', '대', '구분', '시작', '종료', '시간', '메모', ''], shown.map(function (m) {
+        unitCard(list),
+        list.length ? h('details', { class: 'meas-detail' }, h('summary', null, '상세 구간 보기 (' + list.length + '행) — 구간별 시작 · 종료 · 메모, 지우기'),
+        table(['측정일', '작업자', '공정', '대', '구분', '시작', '종료', '시간', '메모', ''], shown.map(function (m) {
           return { cls: L.measureKey(m) === ui.lastSeg ? 'differs' : null, cells: [m.date.slice(5), m.worker || '-', m.process, m.unit || '-', [kCat(m.kind) === 'work' ? kName(m.kind) : h('span', { class: 'badge ' + (kCat(m.kind) === 'loss' ? (m.kind === '대기' ? 'over' : 'bn') : 'muted') }, kName(m.kind)), m.done ? [' ', h('span', { class: 'badge ok' }, '완료')] : null], m.start, m.end, L.fmtDur(m.sec), m.memo,
             h('button', { type: 'button', class: 'btn btn-sm btn-danger', 'aria-label': '이 행 지우기', onclick: function () { var k = L.measureKey(m); db.measures = db.measures.filter(function (x) { return L.measureKey(x) !== k; }); syncFromMeasures(); save(); render(); } }, '지우기')] };
-        }), { num: [0, 0, 0, 0, 0, 1, 1, 1, 0, 0] }) : h('p', { class: 'note' }, '아직 없습니다.'),
-        list.length > shown.length ? h('p', { class: 'note' }, '최근 ' + shown.length + '행만 보입니다. 전체는 엑셀로 내려받아 보세요.') : null)
+        }), { num: [0, 0, 0, 0, 0, 1, 1, 1, 0, 0] }),
+        list.length > shown.length ? h('p', { class: 'note' }, '최근 ' + shown.length + '행만 보입니다. 전체는 엑셀로 내려받아 보세요.') : null) : h('p', { class: 'note' }, '아직 없습니다.'))
     ];
   }
 

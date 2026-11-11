@@ -210,24 +210,57 @@ window.AUTH_CONFIG = {
     },
     "landing": {
       "colors": {
-        "navy": "#1b2838",
-        "navy2": "#121b26",
-        "brand": "#b84a12",
-        "brandDark": "#963b0d",
-        "accent": "#ffb27a"
+        "navy": "#0d2a5c",
+        "navy2": "#081d42",
+        "brand": "#1a4fa0",
+        "brandDark": "#123a78",
+        "accent": "#ff9a8f"
       },
       "slides": [
         {
-          "image": "images/slide-1.jpg"
+          "image": "images/slide-1.jpg",
+          "tone": "light",
+          "caption": "용접 현장"
         },
         {
-          "image": "images/slide-2.jpg"
+          "image": "images/slide-2.jpg",
+          "tone": "light",
+          "caption": "건화 본사"
         },
         {
-          "image": "images/slide-3.jpg"
+          "image": "images/slide-3.jpg",
+          "tone": "light"
         }
       ],
-      "heroMode": "slide"
+      "heroMode": "slide",
+      "company": {
+        "name": "건화",
+        "en": "KUNHWA",
+        "logo": "images/logo.png",
+        "logoH": 40
+      },
+      "minimal": true,
+      "badge": "현장 작업자 · 관리자 공용",
+      "headline": "KUNHWA · 제작관리 시스템",
+      "lead": "작업 기록 · 실적 관리 · 공정 현황을 한곳에서 봅니다.",
+      "cta": "로그인",
+      "cards": [
+        {
+          "title": "작업 기록",
+          "desc": "현장에서 시작 · 일시정지 · 종료로 작업 시간을 기록",
+          "icon": "clock"
+        },
+        {
+          "title": "실적 관리",
+          "desc": "일일 실적과 목표 대비 달성률 확인",
+          "icon": "chart"
+        },
+        {
+          "title": "공정 현황",
+          "desc": "공정별 진행과 대별 사이클타임을 한눈에",
+          "icon": "layers"
+        }
+      ]
     }
   }
 };

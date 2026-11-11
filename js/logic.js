@@ -22,7 +22,7 @@
   'use strict';
   /* 판(版) — index.html 의 ?v= · app.js 의 APP_VERSION 과 같아야 합니다(scripts/bump-version.mjs 로 함께 올림).
      브라우저가 옛 logic.js 와 새 app.js 를 섞어 쓰면 app.js 가 이 값을 보고 계산을 멈춥니다. */
-  var VERSION = '2026-11-11.4';
+  var VERSION = '2026-11-11.6';
 
   var SCHEMA_VERSION = 1;
   var GOAL = 0.9; // 달성률 목표 90% (제출 원문)
@@ -534,6 +534,31 @@
   }
   function sortMeasures(list) {
     return list.slice().sort(function (a, b) { return cmp(a.date, b.date) || cmp(a.worker, b.worker) || cmp(a.start, b.start); });
+  }
+  /* 대(제품) 한 대의 총 사이클타임 — 측정일 × 대 번호로 묶어 작업 시간 분류의 합을 냅니다(11-11 요청: 측정 기록에서 바로 보기).
+     ctSec = 작업 시간 합(+ 설정이면 준비), otherSec = 손실 · 비작업 · 일시정지(· 준비) 합, spanSec = ctSec + otherSec.
+     byProcess = 공정별 ctSec(공정 순서대로), done = 모든 측정 공정에서 완료 표시가 하나라도 있는가. 최근 날짜 · 큰 대 번호가 위. */
+  function unitTotals(measures, kinds, opts) {
+    var o = opts || {}, idx = kindIndex(kinds), map = {}, order = [];
+    (measures || []).forEach(function (m) {
+      if (!m || !m.date) return;
+      var key = m.date + '|' + str(m.unit);
+      var u = map[key]; if (!u) { u = map[key] = { date: m.date, unit: str(m.unit), ctSec: 0, otherSec: 0, start: '', end: '', proc: {}, procOrder: [], workers: [], rows: 0 }; order.push(key); }
+      var cat = m.kind === PAUSE ? 'pause' : idx.cat(m.kind), sec = +m.sec || 0, inCt = cat === 'work' || (cat === 'setup' && o.ctSetup);
+      if (inCt) u.ctSec += sec; else u.otherSec += sec;
+      var p = u.proc[m.process]; if (!p) { p = u.proc[m.process] = { name: m.process, ctSec: 0, done: false }; u.procOrder.push(m.process); }
+      if (inCt) p.ctSec += sec; if (m.done === true) p.done = true;
+      if (m.worker && u.workers.indexOf(m.worker) < 0) u.workers.push(m.worker);
+      if (m.start && (!u.start || m.start < u.start)) u.start = m.start;
+      if (m.end && (!u.end || m.end > u.end)) u.end = m.end;
+      u.rows++;
+    });
+    var seq = {}; (o.processes || []).forEach(function (p) { seq[p.name] = +p.seq || 999; });
+    return order.map(function (k) {
+      var u = map[k], by = u.procOrder.map(function (n) { return u.proc[n]; }).sort(function (a, b) { return (seq[a.name] || 999) - (seq[b.name] || 999); });
+      return { date: u.date, unit: u.unit, ctSec: u.ctSec, otherSec: u.otherSec, spanSec: u.ctSec + u.otherSec, start: u.start, end: u.end, byProcess: by,
+        workers: u.workers, rows: u.rows, done: by.length > 0 && by.every(function (p) { return p.done; }) };
+    }).sort(function (a, b) { return a.date === b.date ? (toNum(b.unit) || 0) - (toNum(a.unit) || 0) || String(b.unit).localeCompare(String(a.unit)) : (a.date < b.date ? 1 : -1); });
   }
   function measureDays(measures) { return uniq((measures || []).map(function (m) { return m.date; })).sort(); }
 
@@ -1170,7 +1195,7 @@
     detectColumns: detectColumns, headerSignature: headerSignature, pickSheet: pickSheet,
     parseDaily: parseDaily, cleanDaily: cleanDaily, mergeDaily: mergeDaily, addDailyDay: addDailyDay, dropBlankDay: dropBlankDay, achieveRows: achieveRows, achieveTotal: achieveTotal, achieveToAoa: achieveToAoa,
     cleanProcess: cleanProcess, sortProcesses: sortProcesses, processByName: processByName,
-    normKind: normKind, isLoss: isLoss, parseMeasure: parseMeasure, cleanMeasure: cleanMeasure, mergeMeasures: mergeMeasures, sortMeasures: sortMeasures, measureDays: measureDays, measureKey: measureKey,
+    normKind: normKind, isLoss: isLoss, parseMeasure: parseMeasure, cleanMeasure: cleanMeasure, mergeMeasures: mergeMeasures, sortMeasures: sortMeasures, measureDays: measureDays, measureKey: measureKey, unitTotals: unitTotals,
     processStats: processStats, taktInfo: taktInfo, lineAnalysis: lineAnalysis, lossPareto: lossPareto, lossMatrix: lossMatrix,
     simulate: simulate, suggestAllocation: suggestAllocation, periodFacts: periodFacts, comparePeriods: comparePeriods, compareToAoa: compareToAoa, costOf: costOf,
     sopRows: sopRows, assignAliases: assignAliases, maskText: maskText, unmaskText: unmaskText, findLeaks: findLeaks,
