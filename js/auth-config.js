@@ -8,6 +8,7 @@ window.AUTH_CONFIG = {
   "kakao": true,
   "idleMinutes": 30,
   "localBypass": true,
+  "board": true,
   "site": {
     "title": "프레임 제작 생산성 개선",
     "summary": "일일 실적과 현장 측정으로 목표 대수 대비 달성률(90% 선)을 관리하고, 공정별 작업시간·손실·병목과 인원 배분, 개선 전후 단가 절감을 분석해 표준작업서 초안까지 만드는 브라우저 도구입니다.",
